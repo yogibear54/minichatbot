@@ -1,0 +1,52 @@
+# Chatbot configuration — copy to config.yaml and edit.
+# Secrets are read from environment variables (never stored here).
+
+site:
+  name: "My Site"                 # shown in the widget header
+  start_url: "https://example.com"
+  max_pages: 200                  # hard cap during ingest
+  include_subdomains: false
+  crawl_fallback: true            # crawl homepage links if no sitemap found
+  exclude_paths: []               # extra path substrings to skip (search/genindex/_modules always excluded)
+
+# Chat LLM (OpenRouter per plan; any OpenAI-compatible endpoint works)
+chat:
+  base_url: "https://openrouter.ai/api/v1"
+  api_key_env: "OPENROUTER_API_KEY"
+  model: "meta-llama/llama-3.1-8b-instruct"   # revisit after Phase 0 benchmark
+  context_window: 131072
+  max_output: 700
+  temperature: 0.2
+  extra_headers:                  # OpenRouter attribution (optional)
+    HTTP-Referer: "https://your-bot-host.example"
+    X-Title: "site-chatbot"
+
+# Input guard: Llama Guard 4 via OpenRouter (same key as chat — one key total).
+# Any OpenAI-compatible host works: point base_url/api_key_env at e.g. Groq if preferred.
+guard:
+  enabled: true
+  base_url: "https://openrouter.ai/api/v1"
+  api_key_env: "OPENROUTER_API_KEY"
+  model: "meta-llama/llama-guard-4-12b"
+  # MLCommons hazard categories to block. Defaults block violence, crime,
+  # sex-related crimes, CSAM, privacy violations, weapons, hate, self-harm, sexual content.
+  blocked_categories: ["S1", "S2", "S3", "S4", "S7", "S9", "S10", "S11", "S12"]
+
+# Token budget verdicts (see PLAN §5)
+budgets:
+  pass_tokens: 40000              # corpus <= this: PASS (comfortable)
+  warn_tokens: 100000             # <= this: WARN (fits, quality/latency risk); above: FAIL
+  history_turns: 4
+  safety_margin_pct: 10           # % of context window reserved on top of explicit reserves
+
+rate_limits:
+  requests_per_minute: 6          # per IP, token bucket
+  burst: 10
+  max_question_chars: 2000
+
+admin:
+  token_env: "ADMIN_TOKEN"        # required to call POST /api/refresh; unset = refresh disabled
+
+refusal_message: >
+  I can't help with that. I'm here to answer questions about {site} — ask me
+  anything about its content and I'll point you to the right page.

@@ -1,5 +1,14 @@
 # Implementation Plan — Markdown-Only Site Chatbot with Guided Navigation
 
+> **Implementation status (v1 built):** Phases 1–6 implemented in `chatbot/` — ingest/validate
+> CLI (sitemap+crawl, exclusions, hashes, tokens, PASS/WARN/FAIL), FastAPI server (Llama Guard
+> pre-flight, SSE streaming with citation holdback, citation validation + page-level rescue,
+> sessions/rate-limits/block-log, FAIL-bundle refusal, guarded refresh), vanilla-JS widget
+> (launcher, iframe chat, link-first source chips + "Show me" scroll/highlight with fallback
+> chain). 16 tests green; live end-to-end verified against a real docs site through OpenRouter.
+> Phase 0 benchmark script provided (`scripts/phase0_benchmark.py`) — needs API keys to run.
+> Phase 7 polish (theming, eval set, deploy recipe) outstanding.
+
 Companion to `RESEARCH.md`. This plan covers a **simple, full-context (no RAG)** chatbot:
 clean markdown is the single source of truth, validated per site against the model's
 context window, with safety guardrails and on-page guidance (navigate → scroll → highlight).
@@ -272,4 +281,8 @@ chatbot/
 
 - Initial plan drafted 2026-02; questionnaire resolved stack / provider / moderation / deployment as recorded above.
 - Research basis and provider speed data: see `RESEARCH.md` §6, §3.1.
+- **Guard model relocated (build-time discovery):** `llama-guard-3-8b` is no longer listed;
+  guard now defaults to `meta-llama/llama-guard-4-12b` **via OpenRouter** — same key as chat,
+  verified live (benign → `safe`, explosives → `unsafe S9` → policy refusal). `guard_check`
+  parses category codes anywhere in the reply; Groq remains a config option (`console.groq.com/keys`).
 - **pi-durable (`@earendil-works/pi-durable`) evaluated and declined for v1.** It is a TS/Node durable conversation runtime (SQLite-backed transcripts, crash-resume, watch()-based streaming partials; pi-ai ships OpenRouter/Groq providers) and would fit the serving layer, but: (a) it would force a Node backend, contradicting the locked Python decision or requiring a sidecar; (b) the API is explicitly experimental ("changes without notice"). If crash-resume/durable sessions become a v2 requirement, revisit: TS serving layer + pi-durable, ingest CLI stays Python.

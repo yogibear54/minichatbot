@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{SITE_NAME}} — Assistant</title>
+<link rel="stylesheet" href="/chat.css">
+</head>
+<body>
+<header class="cb-head">
+  <div class="cb-avatar" aria-hidden="true">◆</div>
+  <div>
+    <div class="cb-title">{{SITE_NAME}}</div>
+    <div class="cb-sub">AI assistant · answers from this site's content</div>
+  </div>
+</header>
+
+<main id="messages" class="cb-messages" aria-live="polite">
+  <div class="cb-note">Ask anything about this site — answers link to the exact page and section.</div>
+</main>
+
+<div id="suggestions" class="cb-suggestions" hidden></div>
+
+<form id="composer" class="cb-composer" autocomplete="off">
+  <input id="q" type="text" maxlength="2000" placeholder="Ask about this site…"
+         aria-label="Your question" autocomplete="off">
+  <button type="submit" aria-label="Send">➤</button>
+</form>
+
+<script src="/chat.js"></script>
+</body>
+</html>
