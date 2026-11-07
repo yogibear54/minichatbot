@@ -13,6 +13,29 @@
   var sessionId = sessionStorage.getItem("cb-session") || "";
   var streaming = false;
 
+  /* ------------------------------------------- transcript persistence (refresh) */
+  var STORE_KEY = "cb-chat-v1";
+  var MAX_STORED = 30;
+  var EXPIRY_MS = 7 * 24 * 3600 * 1000;
+  var history = [];            // [{role, text, sources}] — mirrors the visible chat
+  var restoredBots = [];       // bot bubbles re-rendered from storage (sources pending bridge)
+
+  function loadStore() {
+    try {
+      var rec = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
+      if (rec && rec.sessionId && Array.isArray(rec.messages) &&
+          Date.now() - (rec.updated || 0) < EXPIRY_MS) return rec;
+    } catch (e) {}
+    return null;
+  }
+  function saveStore() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        sessionId: sessionId, messages: history.slice(-MAX_STORED), updated: Date.now()
+      }));
+    } catch (e) {}
+  }
+
   /* -------------------------------------------------- parent bridge handshake */
   function postParent(msg) {
     try { window.parent.postMessage(msg, PARENT_ORIGIN); } catch (e) {}
@@ -20,7 +43,17 @@
   postParent({ type: "READY" });
   window.addEventListener("message", function (ev) {
     if (PARENT_ORIGIN !== "*" && ev.origin !== PARENT_ORIGIN) return;
-    if (ev.data && ev.data.type === "PARENT_ALIVE") bridge = true;
+    if (ev.data && ev.data.type === "PARENT_ALIVE") {
+      bridge = true;
+      // restored messages rendered before the handshake lack Show me buttons — add them
+      restoredBots.forEach(function (b) {
+        if (b._sources && b.querySelector(".cb-sources")) {
+          b.querySelector(".cb-sources").remove();
+          renderSources(b, b._sources);
+        }
+      });
+      restoredBots = [];
+    }
     if (ev.data && ev.data.type === "OPENED") $input && $input.focus();
   });
   document.addEventListener("keydown", function (e) {
@@ -84,7 +117,11 @@
     streaming = true;
     $send.disabled = true;
     bubble("user", question);
+    history.push({ role: "user", text: question });
+    saveStore();
     var bot = bubble("bot");
+    var entry = { role: "bot", text: "", sources: null };
+    history.push(entry);
     var cursor = el("span", "cursor");
     bot.appendChild(cursor);
     var acc = "";
@@ -118,6 +155,7 @@
           handleEvent(ev, bot);
           if (ev.type === "token") {
             acc += ev.text;
+            entry.text = acc;
             bot.textContent = acc;
             bot.appendChild(cursor);
             scrollDown();
@@ -140,17 +178,56 @@
         sessionId = ev.session_id;
         sessionStorage.setItem("cb-session", sessionId);
       } else if (ev.type === "refusal") {
+        entry.text = ev.message;
         botEl.className = "cb-msg bot refusal";
         botEl.textContent = ev.message;
       } else if (ev.type === "citations") {
+        entry.sources = ev.citations;
         renderSources(botEl, ev.citations);
       } else if (ev.type === "error") {
+        entry.text = ev.message;
         var note = el("div", "cb-msg bot error", ev.message);
         $messages.appendChild(note);
         scrollDown();
+      } else if (ev.type === "done") {
+        saveStore();
       }
     }
   }
+
+  /* ------------------------------------------------- restore + new conversation */
+  document.getElementById("clear").addEventListener("click", function () {
+    history = [];
+    sessionId = "";                                   // next message starts a fresh session
+    sessionStorage.removeItem("cb-session");
+    try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+    restoredBots = [];
+    $messages.innerHTML = "";
+    $messages.appendChild(el("div", "cb-note",
+      "Ask anything about this site — answers link to the exact page and section."));
+    $input.focus();
+  });
+
+  (function restore() {
+    var rec = loadStore();
+    if (!rec) return;
+    sessionId = rec.sessionId;
+    sessionStorage.setItem("cb-session", sessionId);
+    rec.messages.forEach(function (m) {
+      history.push(m);
+      if (m.role === "user") {
+        bubble("user", m.text);
+        return;
+      }
+      var b = bubble("bot", m.text);
+      if (m.sources && m.sources.length) {
+        b._sources = m.sources;
+        renderSources(b, m.sources);
+        if (!bridge) restoredBots.push(b);
+      }
+    });
+    scrollDown(true);
+  })();
 
   /* ------------------------------------------------------------------- info */
   fetch("/api/info").then(function (r) { return r.ok ? r.json() : null; }).then(function (info) {
