@@ -96,7 +96,7 @@ def _parse_sitemap_xml(xml_text: str) -> tuple[list[tuple[str, str | None]], boo
 
 def discover_urls(client: httpx.Client, site_url: str, max_pages: int,
                   include_subdomains: bool = False, crawl_fallback: bool = True,
-                  exclude: list[str] | None = None
+                  exclude: list[str] | None = None, map_host: str | None = None
                   ) -> tuple[dict[str, str | None], str]:
     """Returns ({canonical_url: lastmod|None}, method). Sitemap-first, robots hint, crawl fallback."""
     found: dict[str, str | None] = {}          # canonical_url -> lastmod
@@ -106,6 +106,12 @@ def discover_urls(client: httpx.Client, site_url: str, max_pages: int,
     origin = f"{base.scheme}://{base.netloc}"
 
     def add_page(cu: str, lastmod: str | None = None) -> bool:
+        if map_host:
+            # rewrite sitemap URLs onto the start_url origin (scheme+host), keep the path —
+            # for local/staging crawls whose sitemap lists production URLs
+            p = urlsplit(cu)
+            base = urlsplit(site_url)
+            cu = urlunsplit((base.scheme, base.netloc, p.path, p.query, ""))
         if not same_site(cu, site_url, include_subdomains) or ".xml" in urlsplit(cu).path:
             return False
         if excluded(cu, exclude):
@@ -243,8 +249,20 @@ def extract_markdown(page_html: str, url: str, fallback_title: str) -> FetchedPa
 
 def fetch_and_extract(client: httpx.Client, url: str,
                       etag: str | None = None, last_modified: str | None = None,
-                      skip_unchanged: bool = False) -> tuple[FetchedPage | None, str]:
-    """Fetch one URL; returns (page|None, status). status: ok|unchanged|skipped|error."""
+                      skip_unchanged: bool = False,
+                      renderer: "JsRenderer | None" = None) -> tuple[FetchedPage | None, str]:
+    """Fetch one URL; returns (page|None, status). status: ok|unchanged|skipped|error.
+    With a JsRenderer, the page is rendered in headless Chromium first (JS-only sites,
+    PLAN §9.1) and conditional-GET skipping is bypassed (raw HTML never changes even
+    when injected content does — the hash diff remains the source of truth)."""
+    if renderer is not None:
+        html = renderer.html(url)
+        if html is None:
+            return None, "error"
+        page = extract_markdown(html, canonical_url(url), url)
+        if page is None:
+            return None, "skipped"
+        return page, "ok"
     headers = {"User-Agent": USER_AGENT}
     if skip_unchanged and etag:
         headers["If-None-Match"] = etag
@@ -268,6 +286,45 @@ def fetch_and_extract(client: httpx.Client, url: str,
     page.etag = r.headers.get("etag")
     page.last_modified = r.headers.get("last-modified")
     return page, "ok"
+
+
+class JsRenderer:
+    """Headless-Chromium renderer for JS-only sites (the Crawl4AI approach from
+    RESEARCH §2). Start once per run; reuse across pages; close() at the end."""
+
+    def __init__(self, timeout_ms: int = 20000):
+        from playwright.sync_api import sync_playwright
+
+        self._pw = sync_playwright().start()
+        self.browser = self._pw.chromium.launch(headless=True)
+        self.page = self.browser.new_page(user_agent=USER_AGENT)
+        self.timeout_ms = timeout_ms
+
+    def html(self, url: str) -> str | None:
+        import time
+
+        try:
+            try:
+                self.page.goto(url, wait_until="networkidle", timeout=self.timeout_ms)
+            except Exception:
+                pass  # networkidle timeout -> take whatever has rendered
+            # page.content() can race with JS-driven navigation — retry briefly
+            for attempt in range(4):
+                try:
+                    return self.page.content()
+                except Exception:
+                    time.sleep(0.3 * (attempt + 1))
+            return None
+        except Exception as e:
+            log.warning("render failed %s: %s", url, e)
+            return None
+
+    def close(self) -> None:
+        try:
+            self.browser.close()
+            self._pw.stop()
+        except Exception:
+            pass
 
 
 def progress_printer(label: str) -> Callable[[str], None]:

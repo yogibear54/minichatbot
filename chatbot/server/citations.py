@@ -5,7 +5,7 @@ import json
 import re
 from typing import Callable
 
-from core.markdown_utils import normalize_ws
+from core.markdown_utils import normalize_loose, normalize_ws
 
 _CITATIONS_RE = re.compile(r"CITATIONS:\s*(\[)", re.IGNORECASE)
 
@@ -58,6 +58,7 @@ class KnowledgeBase:
             self.pages[entry["url"]] = {
                 "title": entry["title"],
                 "md_normalized": normalize_ws(md),
+                "md_loose": normalize_loose(md),
                 "anchors": {h["slug"] for h in entry.get("headings", [])},
             }
 
@@ -79,7 +80,8 @@ def validate_citations(candidates: list[dict], kb: KnowledgeBase, limit: int = 3
             anchor = ""  # drift -> degrade to page-level citation
         if len(quote) < 8 or len(quote) > 400:
             continue
-        if quote not in page["md_normalized"]:
+        quote_loose = normalize_loose(quote)
+        if quote not in page["md_normalized"] and quote_loose not in page["md_loose"]:
             continue
         label = c.get("label") or page["title"]
         valid.append({"url": url + (f"#{anchor}" if anchor else ""),

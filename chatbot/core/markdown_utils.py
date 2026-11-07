@@ -30,6 +30,13 @@ def normalize_ws(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def normalize_loose(text: str) -> str:
+    """Whitespace + markdown-symbol stripped (bold/italics/headings/bullets removed)
+    — second-chance match for quotes spanning inline formatting."""
+    text = re.sub(r"[*_`#>\[\]]+", "", text)
+    return normalize_ws(text)
+
+
 @dataclass
 class Heading:
     level: int

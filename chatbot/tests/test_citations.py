@@ -12,10 +12,11 @@ Choose the export button and pick CSV format.
 
 def _kb(tmp_path):
     kb = KnowledgeBase(tmp_path)
-    from core.markdown_utils import normalize_ws
+    from core.markdown_utils import normalize_loose, normalize_ws
     kb.pages["https://s.com/export"] = {
         "title": "Export Guide",
         "md_normalized": normalize_ws(PAGE_MD),
+        "md_loose": normalize_loose(PAGE_MD),
         "anchors": {"export-guide", "csv-export"},
     }
     return kb

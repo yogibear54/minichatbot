@@ -16,6 +16,9 @@ class SiteConfig:
     max_pages: int = 200
     include_subdomains: bool = False
     crawl_fallback: bool = True
+    render_js: bool = False        # headless-Chromium rendering for JS-only sites
+    map_sitemap_host: bool = False # rewrite sitemap URLs (e.g. prod domain) to start_url host —
+                                   # for local/staging crawls of a site whose sitemap lists production URLs
     suggestions: list = field(default_factory=list)  # suggested questions for the widget
     exclude_paths: list = field(default_factory=list)  # path substrings to skip
 

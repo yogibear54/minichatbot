@@ -120,11 +120,14 @@
     if (quote) {
       var ranges = findRanges(document.body, quote);
       if (!ranges.length) ranges = findRanges(document.body, firstWords(quote, 8));
+      if (!ranges.length) ranges = findBlockRanges(document.body, quote);
+      if (!ranges.length) ranges = findBlockRanges(document.body, firstWords(quote, 8));
       if (ranges.length) {
-        if (!scrolled) ranges[0].startContainer.parentElement &&
-          ranges[0].startContainer.parentElement.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+        var sc = ranges[0].startContainer.nodeType === 1 ? ranges[0].startContainer
+                                                         : ranges[0].startContainer.parentElement;
+        if (sc) sc.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
         if (window.Highlight && CSS.highlights) {
-          var hl = new window.Highlight.apply(null, ranges);
+          var hl = new window.Highlight(...ranges);
           CSS.highlights.set("cb-guide", hl);
           hlRegistered = true;
         } else {
@@ -137,6 +140,25 @@
   }
 
   function firstWords(s, n) { return s.replace(/\s+/g, " ").trim().split(" ").slice(0, n).join(" "); }
+
+  /* Block-level matcher: compare per-paragraph innerText (browser-normalized, so text
+   * split across GSAP/animation spans still matches). Highlights the whole block —
+   * also the better "guide the eye" UX for long quotes. */
+  function findBlockRanges(rootEl, needle) {
+    needle = needle.replace(/\s+/g, " ").trim();
+    if (!needle) return [];
+    var blocks = rootEl.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, figcaption, dd, dt");
+    var out = [];
+    for (var i = 0; i < blocks.length && out.length < 20; i++) {
+      var t = (blocks[i].innerText || "").replace(/\s+/g, " ").trim();
+      if (t && t.indexOf(needle) !== -1) {
+        var r = document.createRange();
+        r.selectNodeContents(blocks[i]);
+        out.push(r);
+      }
+    }
+    return out;
+  }
 
   /* Locate a (whitespace-normalized) quote in the live DOM, returning Ranges. */
   function findRanges(rootEl, needle) {

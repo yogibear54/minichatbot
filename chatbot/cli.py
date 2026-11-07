@@ -81,26 +81,31 @@ def _print_manifest(manifest, cfg) -> None:
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(prog="chatbot", description="Markdown-only site chatbot")
-    parser.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", default=None, help="path to config.yaml (default: ./config.yaml)")
+    parser.add_argument("--config", default=None, help="path to config.yaml (before the subcommand)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_ing = sub.add_parser("ingest", help="crawl + validate a site, build the bundle")
-    p_ing.add_argument("--max-pages", type=int, default=None)
+    for name, help_text, extra in (
+        ("ingest", "crawl + validate a site, build the bundle", {"--max-pages": dict(type=int, default=None)}),
+        ("refresh", "incremental sync (hash diff, only changed pages)", {}),
+        ("validate", "re-check the token verdict for the existing bundle", {}),
+    ):
+        p = sub.add_parser(name, help=help_text, parents=[common])
+        for flags, kwargs in extra.items():
+            p.add_argument(flags, **kwargs)
 
-    sub.add_parser("refresh", help="incremental sync (hash diff, only changed pages)")
-    sub.add_parser("validate", help="re-check the token verdict for the existing bundle")
-
-    p_srv = sub.add_parser("serve", help="run the chatbot server (API + widget)")
+    p_srv = sub.add_parser("serve", help="run the chatbot server (API + widget)", parents=[common])
     p_srv.add_argument("--host", default="127.0.0.1")
     p_srv.add_argument("--port", type=int, default=8000)
 
     args = parser.parse_args(argv)
-    cfg_path = Path(args.config)
-    if not cfg_path.exists():
-        print(f"Missing {cfg_path}. Copy config.example.yaml to config.yaml and edit it.",
+    config_path = Path(args.config or "config.yaml")
+    if not config_path.exists():
+        print(f"Missing {config_path}. Copy config.example.yaml to config.yaml and edit it.",
               file=sys.stderr)
         return 1
-    cfg = load_config(cfg_path)
+    cfg = load_config(config_path)
 
     return {"ingest": cmd_ingest, "refresh": cmd_refresh, "validate": cmd_validate,
             "serve": cmd_serve}[args.command](cfg, args)
