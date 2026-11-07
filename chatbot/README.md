@@ -30,7 +30,7 @@ Stack: **Python/FastAPI server + vanilla JS widget** (per the locked decisions i
 ```bash
 cd chatbot
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp config.example.yaml config.yaml    # edit site.name / start_url
+cp config.example.yaml config.yaml    # first site (or per-site folders — see next section)
 .venv/bin/pip install -r requirements-dev.txt   # for tests
 ```
 
@@ -43,13 +43,73 @@ Get an OpenRouter key at https://openrouter.ai/settings/keys (sign up, create ke
 If you prefer a different guard host (e.g. Groq, key from https://console.groq.com/keys),
 point `guard.base_url` / `guard.api_key_env` at it — any OpenAI-compatible endpoint works.
 
+## New site setup — step by step
+
+One installation = one site (its own config + data dir, PLAN §12). For each new site,
+create a subfolder so bundles never mix — `lotus/` in this repo is a working example.
+
+**1. Create the site config** — e.g. `mysite/config.yaml`. Only the `site` block is
+required; chat/guard/budgets inherit the code defaults (OpenRouter + Llama Guard 4).
+
+```yaml
+site:
+  name: "My Site"
+  start_url: "http://localhost:8081/"
+  max_pages: 40
+  render_js: false           # flip to true for JS-rendered sites (see step 3)
+  map_sitemap_host: false    # flip to true for local/staging crawls (see step 3)
+  suggestions:               # tappable chips shown in the widget
+    - "What services do you offer?"
+chat:
+  model: "meta-llama/llama-3.1-8b-instruct"   # A/B showed 8B beats gpt-oss-20b at citations
+```
+
+**2. Export the key** — `export OPENROUTER_API_KEY=sk-or-...` (runs chat AND guard).
+
+**3. Ingest + validate** — `.venv/bin/python cli.py ingest --config mysite/config.yaml`
+
+Read the verdict table; it tells you what to fix:
+- Many pages "skipped — not extractable HTML or too short (JS-only page?)" → the site
+  renders content client-side. Set `render_js: true` and re-run (first run downloads
+  headless Chromium, ~120 MB: `.venv/bin/playwright install chromium`).
+- Pages missing + sitemap lists the *production* domain while you crawl localhost/staging →
+  set `map_sitemap_host: true` (rewrites sitemap URLs onto `start_url`'s host).
+- Verdict **WARN** → serves, but trim pages if you can (small models lose accuracy mid-corpus).
+- Verdict **FAIL** → raise/trim `max_pages`, add `exclude_paths`, or split the site;
+  the server refuses to serve a FAIL bundle.
+- Exit code: 0 = PASS/WARN, 2 = FAIL (CI-friendly).
+
+**4. Serve** — `.venv/bin/python cli.py serve --config mysite/config.yaml --port 8010`
+
+**5. Embed the widget** — one line in the site's shared footer/template, before `</body>`
+(one edit covers every page):
+
+```html
+<script src="http://localhost:8010/widget.js" data-endpoint="http://localhost:8010" defer></script>
+```
+
+**6. Verify end to end** — open the site, click the launcher, ask a question, click
+**Show me** on a citation. Scripted check: `.venv/bin/python scripts/e2e_widget.py "your question"`
+(edit `SITE`/`BOT` constants at the top; drives launcher → chat → citation → highlight).
+
+**7. Daily loop** — keep `serve` running; after content edits run `refresh`; `validate`
+when in doubt. `refresh` only re-crawls changed pages (ETag/lastmod → markdown hash diff)
+and never swaps a FAIL bundle into the running server.
+
+Troubleshooting:
+- `model unavailable: upstream 401` → the API key isn't in the server process's environment.
+- Guard silent → it fails open when its host is unreachable; look for `[guard]` log lines.
+- Chat panel blank on the site → bot server not running on the port in the script tag.
+- Production deploy: replace `localhost` URLs in `start_url` + the embed snippet, and drop
+  `map_sitemap_host` (the production sitemap host then matches `start_url`).
+
 ## Run
 
 ```bash
-.venv/bin/python cli.py ingest                # crawl + validate + build bundle (exit 2 on FAIL)
-.venv/bin/python cli.py validate              # re-check token verdict
-.venv/bin/python cli.py refresh               # incremental sync (ETag/lastmod → hash diff)
-.venv/bin/python cli.py serve --port 8000
+.venv/bin/python cli.py ingest --config <site>/config.yaml    # crawl + validate + build bundle
+.venv/bin/python cli.py validate --config <site>/config.yaml  # re-check token verdict
+.venv/bin/python cli.py refresh --config <site>/config.yaml   # incremental sync (hash diff)
+.venv/bin/python cli.py serve --config <site>/config.yaml --port 8010
 ```
 
 Embed on any page of the site:
