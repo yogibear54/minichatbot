@@ -25,10 +25,12 @@ class OpenAICompatClient:
         return h
 
     async def stream_chat(self, model: str, messages: list[dict], max_tokens: int,
-                          temperature: float) -> AsyncIterator[str]:
+                          temperature: float, response_format: dict | None = None) -> AsyncIterator[str]:
         """Yield content deltas; raises LLMError on transport/API failure."""
         payload = {"model": model, "messages": messages, "max_tokens": max_tokens,
                    "temperature": temperature, "stream": True}
+        if response_format:
+            payload["response_format"] = response_format
         url = f"{self.base_url}/chat/completions"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
