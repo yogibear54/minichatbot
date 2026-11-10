@@ -19,7 +19,8 @@ class SiteConfig:
     render_js: bool = False        # headless-Chromium rendering for JS-only sites
     map_sitemap_host: bool = False # rewrite sitemap URLs (e.g. prod domain) to start_url host —
                                    # for local/staging crawls of a site whose sitemap lists production URLs
-    suggestions: list = field(default_factory=list)  # suggested questions for the widget
+    suggestions: list = field(default_factory=list)  # fallback suggested questions (widget)
+    dynamic_suggestions: bool = True  # generate per-page questions with the LLM at ingest
     exclude_paths: list = field(default_factory=list)  # path substrings to skip
     dedup_boilerplate: bool = True   # drop text sections repeated on >=threshold of pages
     boilerplate_threshold: float = 0.6  # fraction of pages a section must appear on to count as boilerplate

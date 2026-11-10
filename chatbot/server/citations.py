@@ -82,6 +82,7 @@ class KnowledgeBase:
                 continue
             self.pages[entry["url"]] = {
                 "title": entry["title"],
+                "suggestions": entry.get("suggestions", []),
                 "md_raw": md,
                 "md_normalized": normalize_ws(md),
                 "md_loose": normalize_loose(md),

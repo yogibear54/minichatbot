@@ -131,11 +131,18 @@ def create_app(cfg: Config) -> FastAPI:
         return {"ok": True, "verdict": state["manifest"]["verdict"]["status"]}
 
     @app.get("/api/info")
-    async def info() -> dict:
+    async def info(page: str = "") -> dict:
         v = state["manifest"]["verdict"]
+        suggestions = cfg.site.suggestions
+        if page:
+            resolved = kb.resolve(page)
+            if resolved:
+                page_sugg = kb.pages[resolved].get("suggestions") or []
+                if page_sugg:
+                    suggestions = page_sugg
         return {"site_name": cfg.site.name, "verdict": v["status"],
                 "pages": v["pages"], "corpus_tokens": v["corpus_tokens"],
-                "suggestions": cfg.site.suggestions}
+                "suggestions": suggestions}
 
     @app.get("/chat")
     async def chat_page() -> Response:

@@ -1,6 +1,8 @@
 """Ingest/refresh orchestration: discovery -> fetch -> extract -> bundle (PLAN §3.1, §3.6)."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
 from pathlib import Path
@@ -11,8 +13,84 @@ import httpx
 from . import corpus, ingest
 from .config import Config
 from .modelinfo import apply_model_limits, fetch_model_limits
+from server.llm import OpenAICompatClient, LLMError
 
 log = logging.getLogger(__name__)
+
+
+
+
+_SUGGESTION_JUNK = ("constraint", "analyze the request", "reply with", "max 8 words",
+                    "json array", "instruction", "output format", "visitor of this page",
+                    "example output", "example format", "let me craft", "let me create",
+                    "✓", "input:", "the page is about")
+
+
+def _clean_suggestion(item: str) -> str:
+    """Tiny models append explanations/word-counts/self-grading marks:
+    'What is X? - "What is X?" (5 words) ✓' -> 'What is X?'"""
+    item = re.sub(r"\s*\(\d+ words?\)\s*", " ", item)
+    item = item.replace("✓", " ").strip()
+    if " - " in item:
+        left, right = item.split(" - ", 1)
+        for part in (left, right):
+            part = part.strip().strip('"').strip()
+            if 8 <= len(part) <= 90:
+                return part
+    return item.strip().strip('"').strip()
+
+
+def parse_suggestions(text: str, limit: int = 3) -> list[str]:
+    """Tolerantly parse an LLM reply into a list of short question strings.
+    Accepts a JSON array (optionally fenced) or one question per line. Tiny models
+    sometimes echo the prompt's own instructions back — those are filtered out, and
+    questions (containing '?') are preferred over statements."""
+    t = text.strip()
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.IGNORECASE)
+    items: list[str] = []
+    try:
+        arr = json.loads(t)
+        if isinstance(arr, list):
+            items = [str(x).strip() for x in arr if str(x).strip()]
+    except (json.JSONDecodeError, ValueError):
+        lines = [l.strip().lstrip("-*0123456789. ") for l in t.splitlines()]
+        items = [l for l in lines if 8 <= len(l) <= 90]
+    items = [_clean_suggestion(i) for i in items]
+    items = [i for i in items
+             if len(i) >= 4 and len(i) <= 90
+             and not any(marker in i.lower() for marker in _SUGGESTION_JUNK)]
+    # suggestions are questions by definition — non-question filler (meta-preambles,
+    # noun phrases) from weak models is dropped; those pages fall back to site chips
+    return [i for i in items if "?" in i][:limit]
+
+
+def _run_coro_sync(coro, timeout: float = 60.0):
+    """Await a coroutine from synchronous code. asyncio.run() cannot be used here when
+    Playwright's sync API is active (it keeps a loop running in this thread) — so the
+    coroutine is awaited on a dedicated worker thread instead."""
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(asyncio.run, coro).result(timeout=timeout)
+
+
+def _generate_suggestions(client: OpenAICompatClient, model: str, site_name: str,
+                          title: str, md_text: str) -> list[str]:
+    excerpt = md_text[:1500]
+    prompt = (f'Page: "{title}" (site: {site_name})\n\nContent:\n{excerpt}\n\n'
+              "Write 3 short visitor questions (max 8 words each, each ending with '?') "
+              "that THIS page can answer. Example output for a pricing page:\n"
+              '[\"What does the Pro plan include?\", \"Is there a free trial?\", '
+              '\"How much does it cost per user?\"]\n'
+              "Reply with ONLY the JSON array, no other text.")
+    try:
+        reply = _run_coro_sync(client.complete(model, [
+            {"role": "user", "content": prompt}], max_tokens=120, temperature=0.3))
+    except LLMError:
+        return []
+    except concurrent.futures.TimeoutError:
+        return []
+    return parse_suggestions(reply)
 
 
 
@@ -94,6 +172,12 @@ def full_ingest(cfg: Config, max_pages: int | None = None) -> dict:
                 manifest["first_party_markdown"] = sorted(first_party)
                 log.info("llms.txt: %d page(s) available as first-party markdown", len(first_party))
 
+            sugg_client = None
+            if cfg.site.dynamic_suggestions:
+                sugg_client = OpenAICompatClient(cfg.chat.base_url,
+                                                 cfg.api_key(cfg.chat.api_key_env),
+                                                 cfg.chat.extra_headers, timeout=30)
+
             pages: list[dict] = []
             skipped: list[dict] = []
             for i, (url, lastmod) in enumerate(sorted(found.items()), 1):
@@ -105,6 +189,10 @@ def full_ingest(cfg: Config, max_pages: int | None = None) -> dict:
                 if status == "ok" and page is not None:
                     entry = corpus.new_page_entry(page)
                     entry["lastmod"] = lastmod
+                    if sugg_client is not None:
+                        entry["suggestions"] = _generate_suggestions(
+                            sugg_client, cfg.chat.model, cfg.site.name,
+                            page.title, page.markdown)
                     corpus.write_page_file(data_dir / "pages", entry, page.markdown)
                     pages.append(entry)
                     log.info("(%d/%d) ok  %s", i, len(found), url)
@@ -154,6 +242,11 @@ def refresh_site(cfg: Config) -> dict:
             )
             first_party = _first_party_markdown_map(
                 client, cfg.site.start_url, list(found)) if found else {}
+            sugg_client = None
+            if cfg.site.dynamic_suggestions:
+                sugg_client = OpenAICompatClient(cfg.chat.base_url,
+                                                 cfg.api_key(cfg.chat.api_key_env),
+                                                 cfg.chat.extra_headers, timeout=30)
             new_urls = [u for u in found if u not in by_url]
             for url in new_urls:
                 if url in first_party:
@@ -163,6 +256,13 @@ def refresh_site(cfg: Config) -> dict:
                 if status == "ok" and page is not None:
                     entry = corpus.new_page_entry(page)
                     entry["lastmod"] = found.get(url)
+                    if sugg_client is not None:
+                        entry["suggestions"] = _generate_suggestions(
+                            sugg_client, cfg.chat.model, cfg.site.name,
+                            page.title, page.markdown)
+                    corpus.write_page_file(data_dir / "pages", entry, page.markdown)
+                    manifest["pages"].append(entry)
+                    changed.append(f"+ {url}")
                     corpus.write_page_file(data_dir / "pages", entry, page.markdown)
                     manifest["pages"].append(entry)
                     changed.append(f"+ {url}")
@@ -180,6 +280,10 @@ def refresh_site(cfg: Config) -> dict:
                     if corpus.sha256(page.markdown) != existing["hash"]:
                         entry = corpus.new_page_entry(page)
                         entry["lastmod"] = found.get(url) or existing.get("lastmod")
+                        if sugg_client is not None:
+                            entry["suggestions"] = _generate_suggestions(
+                                sugg_client, cfg.chat.model, cfg.site.name,
+                                page.title, page.markdown)
                         corpus.write_page_file(data_dir / "pages", entry, page.markdown)
                         manifest["pages"][manifest["pages"].index(existing)] = entry
                         changed.append(f"~ {url}")

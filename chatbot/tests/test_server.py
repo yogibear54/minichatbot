@@ -175,3 +175,29 @@ def test_serve_keeps_pass_when_window_grows(tmp_path, fixture_site):
     assert client.get("/api/health").json()["verdict"] == "PASS"
     m = json.loads((tmp_path / "data" / "site" / "manifest.json").read_text())
     assert m["model"]["context_window"] == 1_000_000   # metadata persisted, no re-ingest
+
+
+def test_per_page_suggestions(tmp_path, fixture_site, monkeypatch):
+    """manifest page suggestions are served for the matching page; unknown pages fall
+    back to the site-level suggestions."""
+    cfg = make_config(tmp_path, fixture_site)
+    full_ingest(cfg)
+    # hand-set suggestions on the export page (simulating generation)
+    mpath = tmp_path / "data" / "site" / "manifest.json"
+    m = json.loads(mpath.read_text())
+    for p in m["pages"]:
+        if p["url"].endswith("/docs/export"):
+            p["suggestions"] = ["How do I export CSVs?", "What formats are supported?"]
+    mpath.write_text(json.dumps(m))
+
+    monkeypatch.setattr("server.main.OpenAICompatClient", StructuredStub)
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    page_url = next(p["url"] for p in json.loads(
+        (tmp_path / "data" / "site" / "manifest.json").read_text())["pages"]
+        if p["url"].endswith("/docs/export"))
+    info = client.get("/api/info", params={"page": page_url}).json()
+    assert info["suggestions"] == ["How do I export CSVs?", "What formats are supported?"]
+    other = client.get("/api/info").json()          # no page -> site-level fallback
+    assert other["suggestions"] == []               # fixture site has no static suggestions

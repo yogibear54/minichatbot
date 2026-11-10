@@ -66,6 +66,7 @@
         $pc.innerHTML = "📍 Answering with context of: <b></b>";
         $pc.querySelector("b").textContent = (PAGE_TITLE || PAGE_URL).slice(0, 60);
       }
+      loadInfo();                                   // suggestions follow the page
     }
     if (ev.data && ev.data.type === "OPENED") $input && $input.focus();
   });
@@ -254,20 +255,30 @@
     $ctx.querySelector("b").textContent = (PAGE_TITLE || PAGE_URL).slice(0, 60);
   }
 
-  /* ------------------------------------------------------------------- info */
-  fetch("/api/info").then(function (r) { return r.ok ? r.json() : null; }).then(function (info) {
-    if (!info) return;
-    document.title = info.site_name + " — Assistant";
-    if (info.suggestions && info.suggestions.length) {
-      $suggestions.hidden = false;
-      info.suggestions.forEach(function (s) {
-        var b = el("button", null, s);
-        b.type = "button";
-        b.addEventListener("click", function () {
-          if (!streaming) { b.remove(); send(s); }
-        });
-        $suggestions.appendChild(b);
+  /* --------------------------------- info + dynamic per-page suggestions */
+  function renderSuggestions(list) {
+    $suggestions.innerHTML = "";
+    if (!list || !list.length) { $suggestions.hidden = true; return; }
+    $suggestions.hidden = false;
+    list.forEach(function (s) {
+      var b = el("button", null, s);
+      b.type = "button";
+      b.addEventListener("click", function () {
+        if (!streaming) { b.remove(); send(s); }
       });
-    }
-  }).catch(function () {});
+      $suggestions.appendChild(b);
+    });
+  }
+
+  function loadInfo() {
+    fetch("/api/info" + (PAGE_URL ? "?page=" + encodeURIComponent(PAGE_URL) : ""))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (info) {
+        if (!info) return;
+        document.title = info.site_name + " — Assistant";
+        renderSuggestions(info.suggestions);
+      })
+      .catch(function () {});
+  }
+  loadInfo();
 })();
