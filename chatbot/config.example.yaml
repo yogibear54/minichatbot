@@ -7,7 +7,15 @@ site:
   max_pages: 200                  # hard cap during ingest
   include_subdomains: false
   crawl_fallback: true            # crawl homepage links if no sitemap found
+  render_js: false                # headless-Chromium rendering for JS-only sites
+                                  #   (first use: .venv/bin/playwright install chromium, ~120 MB)
+  map_sitemap_host: false         # rewrite sitemap URLs (e.g. prod domain) to start_url's host —
+                                  #   for local/staging crawls of a site whose sitemap lists production URLs
+  suggestions: []                 # fallback suggested questions (widget chips), e.g. ["What services do you offer?"]
+  dynamic_suggestions: true       # generate per-page question chips with the LLM at ingest
   exclude_paths: []               # extra path substrings to skip (search/genindex/_modules always excluded)
+  dedup_boilerplate: true         # drop text sections repeated on >=boilerplate_threshold of pages
+  boilerplate_threshold: 0.6      # fraction of pages a section must appear on to count as boilerplate
 
 # Chat LLM (OpenRouter per plan; any OpenAI-compatible endpoint works)
 chat:
