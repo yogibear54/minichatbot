@@ -65,6 +65,23 @@ class KnowledgeBase:
     def get(self, url: str) -> dict | None:
         return self.pages.get(url)
 
+    def resolve(self, url: str) -> str | None:
+        """Map a visitor's current URL (with fragment, trailing slash variants) to a
+        manifest page URL; None if unknown."""
+        from core.markdown_utils import normalize_ws
+        from urllib.parse import urlsplit, urlunsplit
+
+        def variants(u):
+            p = urlsplit(u)
+            base = urlunsplit((p.scheme, p.netloc, p.path or "/", "", ""))
+            for cand in (base, base.rstrip("/"), base + "/"):
+                yield cand
+
+        for cand in variants(url):
+            if cand in self.pages:
+                return cand
+        return None
+
 
 def validate_citations(candidates: list[dict], kb: KnowledgeBase, limit: int = 3) -> list[dict]:
     """Keep only citations whose url, anchor, and verbatim quote all check out."""
@@ -101,6 +118,12 @@ def rescue_citations(question: str, kb: KnowledgeBase, limit: int = 1) -> list[d
     """Last resort when the model omits/invalidates the CITATIONS block (PLAN §9.6):
     cite the page(s) with the strongest term overlap with the question. Page-level
     only (no anchor/quote fabrications) and only above a conservative overlap floor."""
+def rescue_citations(question: str, kb: KnowledgeBase, limit: int = 1,
+                     prefer_url: str | None = None) -> list[dict]:
+    """Last resort when the model omits/invalidates the CITATIONS block (PLAN §9.6):
+    cite the page(s) with the strongest capped-term-frequency density with the question.
+    A page-aware question (prefer_url) ranks the current page first when it passes the
+    floor. Page-level only (no anchor/quote fabrications)."""
     terms = {w for w in re.findall(r"[a-z0-9]{3,}", question.lower()) if w not in _STOPWORDS}
     if not terms:
         return []
@@ -112,8 +135,13 @@ def rescue_citations(question: str, kb: KnowledgeBase, limit: int = 1) -> list[d
         # capped term frequency, density-normalized: a focused page that repeats the
         # question's words beats a big page that mentions them once (PLAN §3.2 rescue)
         freq = sum(min(hay.count(t), 5) for t in terms)
+        if url == prefer_url and freq < floor:
+            freq = floor        # current page always qualifies when the model stayed silent
         if freq >= floor:
-            scored.append((freq / (1 + words / 500), url, page))
+            score = freq / (1 + words / 500)
+            if url == prefer_url:
+                score += 10     # strong boost: questions on a page are usually about it
+            scored.append((score, url, page))
     scored.sort(reverse=True, key=lambda s: (round(s[0], 6), s[2]["title"]))
     return [{"url": url, "anchor": "", "quote": "", "label": page["title"],
              "rescued": True}

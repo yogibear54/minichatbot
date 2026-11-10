@@ -37,13 +37,22 @@ CITATIONS:
 NAV_REMINDER = "\n(Remember: end your reply with the CITATIONS block exactly as instructed.)"
 
 
-def build_messages(system_prompt: str, history: list[dict], question: str) -> list[dict]:
-    """Layout: static prefix (instructions + corpus) -> short history -> question + reminder.
-    The static prefix never changes between requests so provider prompt caching hits;
-    the reminder rides on the final user message (recency) without entering stored history."""
+def build_messages(system_prompt: str, history: list[dict], question: str,
+                  page_url: str = "", page_title: str = "") -> list[dict]:
+    """Layout: static prefix (instructions + corpus) -> short history -> question + page
+    context + reminder. The static prefix never changes between requests so provider
+    prompt caching hits; everything dynamic (history, current page, reminder) rides at
+    the end without entering stored history."""
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history:
         messages.append({"role": "user", "content": turn["question"]})
         messages.append({"role": "assistant", "content": turn["answer"]})
-    messages.append({"role": "user", "content": question + NAV_REMINDER})
+    user_content = question
+    if page_url:
+        title_clause = f' — "{page_title}"' if page_title else ""
+        user_content += (f"\n\n[Context: the visitor is currently viewing {page_url}"
+                         f"{title_clause}. If the question relates to that page, answer "
+                         f"from it and cite its sections.]")
+    user_content += NAV_REMINDER
+    messages.append({"role": "user", "content": user_content})
     return messages

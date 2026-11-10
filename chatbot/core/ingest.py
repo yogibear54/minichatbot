@@ -158,8 +158,12 @@ def discover_urls(client: httpx.Client, site_url: str, max_pages: int,
     except httpx.HTTPError:
         pass
 
-    if not found and crawl_fallback:
-        for cu, lastmod in _crawl(client, site_url, max_pages, include_subdomains).items():
+    # Sitemap-first, but when crawl_fallback is enabled ALWAYS also crawl nav links:
+    # sitemaps are often incomplete (forgotten pages, new sections) — the homepage nav
+    # catches the rest (e.g. lotus-creations.com's sitemap omits /services).
+    if crawl_fallback:
+        for cu, lastmod in _crawl(client, site_url, max(0, max_pages - len(found)),
+                                  include_subdomains).items():
             add_page(cu, lastmod)
     if not found:
         return {}, "none"

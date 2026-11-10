@@ -3,6 +3,8 @@
   "use strict";
   var qs = new URLSearchParams(location.search);
   var PARENT_ORIGIN = qs.get("parent") || "*";
+  var PAGE_URL = qs.get("page") || "";
+  var PAGE_TITLE = qs.get("ptitle") || "";
   var bridge = false; // parent embed script alive?
 
   var $messages = document.getElementById("messages");
@@ -53,6 +55,17 @@
         }
       });
       restoredBots = [];
+    }
+    if (ev.data && ev.data.type === "PAGE" && ev.data.page) {
+      PAGE_URL = ev.data.page.url || PAGE_URL;
+      PAGE_TITLE = ev.data.page.title || PAGE_TITLE;
+      var $pc = document.getElementById("page-ctx");
+      if ($pc && PAGE_URL) {
+        $pc.hidden = false;
+        $pc.title = PAGE_URL;
+        $pc.innerHTML = "📍 Answering with context of: <b></b>";
+        $pc.querySelector("b").textContent = (PAGE_TITLE || PAGE_URL).slice(0, 60);
+      }
     }
     if (ev.data && ev.data.type === "OPENED") $input && $input.focus();
   });
@@ -127,10 +140,12 @@
     var acc = "";
 
     try {
+      var body = { message: question, session_id: sessionId };
+      if (PAGE_URL) { body.page_url = PAGE_URL; body.page_title = PAGE_TITLE; }  // page-aware
       var res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: question, session_id: sessionId }),
+        body: JSON.stringify(body),
       });
       if (!res.ok || !res.body) {
         var detail = res.status === 429 ? "Too many requests — please slow down." :
@@ -228,6 +243,15 @@
     });
     scrollDown(true);
   })();
+
+  /* ------------------------------------------------------- page context chip */
+  if (PAGE_URL) {
+    var $ctx = document.getElementById("page-ctx");
+    $ctx.hidden = false;
+    $ctx.title = PAGE_URL;
+    $ctx.innerHTML = "📍 Answering with context of: <b></b>";
+    $ctx.querySelector("b").textContent = (PAGE_TITLE || PAGE_URL).slice(0, 60);
+  }
 
   /* ------------------------------------------------------------------- info */
   fetch("/api/info").then(function (r) { return r.ok ? r.json() : null; }).then(function (info) {

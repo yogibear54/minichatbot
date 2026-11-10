@@ -49,7 +49,12 @@
   iframe = document.createElement("iframe");
   iframe.className = "cb-frame";
   iframe.title = "Chat assistant";
-  iframe.src = ORIGIN + "/chat?parent=" + encodeURIComponent(location.origin);
+  // current page rides on the src: every navigation re-creates the widget, so the
+  // iframe always receives the page the visitor is on (multi-page sites; SPAs would
+  // need a pushState hook — noted as a v1 limitation)
+  iframe.src = ORIGIN + "/chat?parent=" + encodeURIComponent(location.origin) +
+               "&page=" + encodeURIComponent(currentPageCtx().url) +
+               "&ptitle=" + encodeURIComponent(currentPageCtx().title);
   iframe.setAttribute("allow", "clipboard-write");
 
   function mount() {
@@ -73,9 +78,61 @@
     if (ev.origin !== ORIGIN || !ev.data) return;
     var d = ev.data;
     if (d.type === "GUIDE") handleGuide(d);
-    else if (d.type === "READY") { try { ev.source.postMessage({ type: "PARENT_ALIVE" }, ORIGIN); } catch (e) {} }
+    else if (d.type === "READY") { try { ev.source.postMessage({ type: "PARENT_ALIVE", page: currentPageCtx() }, ORIGIN); } catch (e) {} }
     else if (d.type === "CLOSE") if (open) toggle();
   });
+
+  /* ------------------------------------------------------ page context (SPA) */
+  function isVisible(el) {
+    if (!el) return false;
+    var st = getComputedStyle(el);
+    if (st.display === "none" || st.visibility === "hidden" || +st.opacity === 0) return false;
+    // NB: offsetParent is null for position:fixed elements (i.e. every modal) — use rects
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  /* Current page context: URL + title; when a modal/dialog is open, its heading is the
+   * real title (document.title often stays stale on modal-SPA pages like /blogs). */
+  function currentPageCtx() {
+    var url = location.href.split("#")[0];
+    var title = document.title || "";
+    var dialogs = document.querySelectorAll('[role="dialog"], dialog[open], .modal');
+    for (var i = 0; i < dialogs.length; i++) {
+      if (!isVisible(dialogs[i])) continue;
+      var h = dialogs[i].querySelector("h1, h2, h3");
+      if (h && h.textContent.trim()) { title = h.textContent.trim(); break; }
+    }
+    return { url: url, title: title.slice(0, 120) };
+  }
+
+  function pushCtxToFrame() {
+    if (!iframe) return;
+    var ctx = currentPageCtx();
+    var sig = ctx.url + "|" + ctx.title;
+    if (sig === pushCtxToFrame._last) return;   // dedupe: send only on real change
+    pushCtxToFrame._last = sig;
+    try { iframe.contentWindow.postMessage({ type: "PAGE", page: ctx }, ORIGIN); } catch (e) {}
+  }
+
+  // Re-send context whenever the URL changes. pushState/replaceState patches catch it
+  // when we install first; a 500ms context-signature poll is the safety net for sites
+  // whose scripts captured the history methods before us, AND for modals whose heading
+  // only becomes visible after their entrance animation (the corrected title arrives
+  // on the next tick once the dialog heading is readable).
+  ["pushState", "replaceState"].forEach(function (fn) {
+    var orig = history[fn];
+    if (typeof orig === "function") {
+      history[fn] = function () {
+        var r = orig.apply(this, arguments);
+        setTimeout(pushCtxToFrame, 0);
+        return r;
+      };
+    }
+  });
+  window.addEventListener("popstate", pushCtxToFrame);
+  window.addEventListener("hashchange", pushCtxToFrame);
+  setInterval(pushCtxToFrame, 500);
 
   /* ----------------------------------------------------------- guide agent */
   function samePage(url) {
@@ -99,6 +156,24 @@
   function handleGuide(d) {
     if (!d || !d.url) return;
     if (!samePage(d.url)) {
+      // modal-aware: if the current page has a visible matching link, click it —
+      // on modal-SPA sites this opens the content in place; on regular sites clicking
+      // the link navigates identically to location.href. Then highlight after render.
+      var target = d.url.split("#")[0].replace(/\/$/, "");
+      var links = document.querySelectorAll("a[href]");
+      for (var i = 0; i < links.length; i++) {
+        var abs = links[i].href;
+        if (!abs || abs.indexOf(location.origin) !== 0) continue;
+        var clean = abs.split("#")[0].replace(/\/$/, "");
+        if (clean === target && isVisible(links[i])) {
+          try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(d)); } catch (e) {}
+          links[i].click();
+          setTimeout(function () {
+            try { runHighlight(d.anchor, d.quote); } catch (e) {}
+          }, 700);
+          return;
+        }
+      }
       try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(d)); } catch (e) {}
       location.href = sttfHref(d);           // browser natively scrolls (+highlights via STTF)
       return;

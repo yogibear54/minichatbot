@@ -65,3 +65,16 @@ def test_rescue_citations(tmp_path):
     assert out and out[0]["url"] == "https://s.com/export"   # single-term question
     assert rescue_citations("hello ???", kb) == []            # only stopwords/short terms
     assert rescue_citations("quantum entanglement budget matrix", kb) == []  # below floor
+
+
+def test_rescue_prefers_current_page(tmp_path):
+    kb = _kb(tmp_path)
+    kb.pages["https://s.com/pricing"] = {
+        "title": "Pricing", "md_normalized": "the team plan costs nine dollars per month",
+        "anchors": set()}
+    kb.pages["https://s.com/contact"] = {
+        "title": "Contact", "md_normalized": "fill out the form and we respond quickly",
+        "anchors": set()}
+    # question with zero lexical overlap on the current page -> current page still wins
+    out = rescue_citations("what is this page about?", kb, prefer_url="https://s.com/contact")
+    assert out and out[0]["url"] == "https://s.com/contact"

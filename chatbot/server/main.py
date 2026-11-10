@@ -138,6 +138,8 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(400, "invalid JSON body")
         message = str(body.get("message", "")).strip()
         session_id = str(body.get("session_id") or "")
+        page_url = str(body.get("page_url") or "").strip()
+        page_title = str(body.get("page_title") or "").strip()[:120]
         if not message:
             raise HTTPException(400, "empty message")
         if len(message) > cfg.rate_limits.max_question_chars:
@@ -165,9 +167,12 @@ def create_app(cfg: Config) -> FastAPI:
                     return
                 # 'error' and unblocked categories fall through to the chat model
 
-            # -- generation (cached static prefix -> history -> question) --------
+            # -- generation (cached static prefix -> history -> question + page ctx) -
             history = store.get_history(session_id)
-            messages = build_messages(state["system_prompt"], history, message)
+            resolved_page = kb.resolve(page_url) if page_url else ""
+            resolved_title = kb.pages[resolved_page]["title"] if resolved_page else ""
+            messages = build_messages(state["system_prompt"], history, message,
+                                      resolved_page, resolved_title)
             acc: list[str] = []
             full = ""
             emitted = 0  # chars of the display text already streamed
@@ -195,8 +200,8 @@ def create_app(cfg: Config) -> FastAPI:
             citations = validate_citations(raw, kb) if raw else []
             if not citations and display.strip() and len(display) > 40:
                 # model omitted/mangled the block (small-model risk, PLAN §9.6) ->
-                # rescue: best term-overlap page so navigation still works
-                citations = rescue_citations(message, kb)
+                # rescue: best term-overlap page, current page preferred when known
+                citations = rescue_citations(message, kb, prefer_url=resolved_page or None)
             if citations:
                 yield sse({"type": "citations", "citations": citations})
             yield sse({"type": "done", "finish": "answer"})
