@@ -66,7 +66,9 @@ def _common_rules(site_name: str) -> str:
   continuous sentence or span (max 25 words) EXACTLY as written in one place — never
   stitch together words from different lines or list items.
 - NEVER include links, URLs, or markdown link syntax like [text](url) in the answer —
-  visitors navigate through the citation chips instead."""
+  visitors navigate through the citation chips instead.
+- The [src: url#anchor] markers in the content are INTERNAL metadata. NEVER copy them
+  (or any [src: ...] text) into your answer."""
 
 
 def build_system_prompt(site_name: str, corpus_md: str, protocol: str = "trailer") -> str:

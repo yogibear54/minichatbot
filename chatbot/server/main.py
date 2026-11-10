@@ -17,7 +17,8 @@ from server.citations import (KnowledgeBase, extract_citations, ground_citations
 from server.llm import LLMError, OpenAICompatClient
 from server.prompts import (CITATION_SCHEMA, build_messages, build_system_prompt)
 from server.sessions import Store
-from server.streamparse import StreamedAnswerParser
+from server.citations import sanitize_markers
+from server.streamparse import StreamMarkerSuppressor, StreamedAnswerParser
 
 WIDGET_DIR = Path(__file__).resolve().parent.parent / "widget"
 SESSION_ID_RE = re.compile(r"^[a-f0-9]{8,64}$")
@@ -223,18 +224,21 @@ def create_app(cfg: Config) -> FastAPI:
 
             async def trailer_events():
                 """Stream the trailer-protocol answer (prose + CITATIONS block with a
-                holdback so the block never reaches the visitor)."""
+                holdback so the block never reaches the visitor). Streamed text also
+                passes a marker suppressor so [src: ...] corpus markers never leak."""
                 acc: list[str] = []
                 emitted = 0
+                sup = StreamMarkerSuppressor()
                 try:
                     async for delta in chat_client.stream_chat(
                             cfg.chat.model, messages, cfg.chat.max_output, cfg.chat.temperature):
                         acc.append(delta)
-                        full = "".join(acc)
-                        m = _CIT_INLINE_RE.search(full)
-                        limit = m.start() if m else max(0, len(full) - _HOLD_CHARS)
+                        sup.feed(delta)
+                        vis = sup.emitted
+                        m = _CIT_INLINE_RE.search(vis)
+                        limit = m.start() if m else max(0, len(vis) - _HOLD_CHARS)
                         if limit > emitted:
-                            yield sse({"type": "token", "text": full[emitted:limit]})
+                            yield sse({"type": "token", "text": vis[emitted:limit]})
                             emitted = limit
                 except LLMError as e:
                     if not acc:
@@ -248,14 +252,18 @@ def create_app(cfg: Config) -> FastAPI:
 
             if protocol == "structured":
                 parser = StreamedAnswerParser()
+                out_sup = StreamMarkerSuppressor()
+                emitted2 = 0
                 structured_failed = None
                 try:
                     async for delta in chat_client.stream_chat(
                             cfg.chat.model, messages, cfg.chat.max_output, cfg.chat.temperature,
                             response_format=CITATION_SCHEMA):
                         text = parser.feed(delta)
-                        if text:
-                            yield sse({"type": "token", "text": text})
+                        visible = out_sup.feed(text)      # newly released suppressed text
+                        emitted2 += len(visible)
+                        if visible:
+                            yield sse({"type": "token", "text": visible})
                 except LLMError as e:
                     structured_failed = str(e)
 
@@ -278,7 +286,10 @@ def create_app(cfg: Config) -> FastAPI:
                         return
                     display, raw_citations = extract_citations(holder.get("full", ""))
                 else:
-                    display = (obj or {}).get("answer") or parser.final_display()
+                    final_answer = sanitize_markers((obj or {}).get("answer") or parser.final_display())
+                    if len(final_answer) > emitted2:
+                        yield sse({"type": "token", "text": final_answer[emitted2:]})
+                    display = final_answer
                     raw_citations = (obj or {}).get("citations") or []
             else:
                 async for ev in trailer_events():
@@ -288,7 +299,8 @@ def create_app(cfg: Config) -> FastAPI:
                     yield sse({"type": "done", "finish": "error"})
                     return
                 full = holder.get("full", "")
-                display, raw_citations = extract_citations(full)
+                display = sanitize_markers(extract_citations(full)[0])
+                raw_citations = extract_citations(full)[1]
 
             # -- grounding: repair anchors (fuzzy section match) + derive quotes --------
             citations = ground_citations(raw_citations or [], kb)

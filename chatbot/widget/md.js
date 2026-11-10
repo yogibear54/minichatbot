@@ -23,6 +23,8 @@
 
   /* inline-level transforms on already-escaped text */
   function inline(s) {
+    // corpus citation markers are internal — never display them
+    s = s.replace(/\[\s*src:[^\]]*\]/gi, "");
     var codes = [];
     s = s.replace(/`([^`]+)`/g, function (_, c) {          // inline code first (protects it)
       codes.push("<code>" + c + "</code>");

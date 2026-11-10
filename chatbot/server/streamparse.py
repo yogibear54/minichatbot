@@ -82,3 +82,59 @@ class StreamedAnswerParser:
         self.i = i
         self.display += "".join(out)
         return "".join(out)
+
+
+class StreamMarkerSuppressor:
+    """Strips [src: ...] corpus markers from a token stream. Holds a small tail so a
+    marker split across deltas is still caught; a runaway marker (no closing bracket)
+    releases after 400 held characters."""
+
+    TAIL = 6
+    MAX_HOLD = 400
+
+    def __init__(self) -> None:
+        self.display = ""
+        self.pending = ""       # held text (possible partial marker or inside marker)
+        self.in_marker = False
+
+    def feed(self, delta: str) -> str:
+        buf = self.pending + delta
+        self.pending = ""
+        out: list[str] = []
+        i = 0
+        low = buf.lower()
+        n = len(buf)
+        while i < n:
+            if self.in_marker:
+                end = low.find("]", i)
+                if end == -1:
+                    self.pending = buf[i:]
+                    if len(self.pending) > self.MAX_HOLD:      # runaway -> release
+                        out.append(self.pending)
+                        self.pending = ""
+                        self.in_marker = False
+                    break
+                i = end + 1
+                self.in_marker = False
+                continue
+            nxt = low.find("[src:", i)
+            if nxt == -1:
+                safe_end = max(i, n - self.TAIL)               # hold possible partial "[src:"
+                out.append(buf[i:safe_end])
+                self.pending = buf[safe_end:]
+                break
+            out.append(buf[i:nxt])                             # text before the marker
+            i = nxt
+            self.in_marker = True
+        text = "".join(out)
+        self.display += text
+        return text
+
+    def flush(self) -> str:
+        out, self.pending = self.pending, ""
+        self.display += out
+        return out
+
+    @property
+    def emitted(self) -> str:
+        return self.display

@@ -19,6 +19,15 @@ _BARE_ARRAY_RE = re.compile(r"\[\s*\{\s*\"url\"\s*:")               # bare/fence
 _TRAILING_LABEL_RE = re.compile(r"(?:#{1,6}\s*)?[*_\s]*citations?[*_\s]*:?[*_\s]*$", re.IGNORECASE)
 
 
+_SRC_MARKER_RE = re.compile(r"\s*\[\s*src\s*:\s*[^\]]*\]", re.IGNORECASE)
+
+
+def sanitize_markers(text: str) -> str:
+    """Remove any [src: url#anchor] citation markers that leaked into an answer."""
+    cleaned = _SRC_MARKER_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).rstrip()
+
+
 def extract_citations(text: str) -> tuple[str, list[dict] | None]:
     """Split a finished answer into (display_text, raw_citation_dicts|None).
 
