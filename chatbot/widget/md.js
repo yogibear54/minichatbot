@@ -28,6 +28,9 @@
       codes.push("<code>" + c + "</code>");
       return "\x00" + (codes.length - 1) + "\x00";
     });
+    // markdown links collapse to their label text — navigation happens exclusively
+    // through validated citation chips, so no <a> elements are ever created here
+    s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
     s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g, "$1<em>$2</em>");
     s = s.replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g, "$1<em>$2</em>");

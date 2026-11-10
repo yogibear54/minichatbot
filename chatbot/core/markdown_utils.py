@@ -63,6 +63,35 @@ def extract_headings(markdown: str) -> list[Heading]:
     return out
 
 
+def normalize_paragraph_wrapping(md: str) -> str:
+    """Collapse soft line breaks inside paragraphs to spaces (GFM: single newlines in a
+    paragraph render as spaces anyway). HTML-to-markdown converters leak source
+    indentation as intra-paragraph newlines ("pick\n      CSV format.") which wastes
+    tokens and breaks verbatim quote matching. Lists, tables, code fences, blockquotes
+    and headings are left untouched."""
+    blocks = re.split(r"\n\s*\n", md)
+    out = []
+    in_fence = False
+    for block in blocks:
+        if in_fence:
+            out.append(block)
+            if "```" in block:
+                in_fence = False
+            continue
+        if "```" in block:
+            in_fence = True
+            out.append(block)
+            continue
+        first = block.lstrip()
+        if (first.startswith(("#", ">", "|", "-", "*", "+"))
+                or re.match(r"\d+[.)]\s", first)
+                or "\n" not in block.strip()):
+            out.append(block)               # structural blocks keep their line breaks
+            continue
+        out.append(normalize_ws(block))
+    return "\n\n".join(out)
+
+
 def section_text_for_anchor(md: str, headings: list[Heading], anchor: str,
                             max_words: int = 25) -> str:
     """First ~max_words words (loose-normalized) of the section under the heading with
@@ -115,13 +144,20 @@ def annotate_page(url: str, title: str, markdown: str) -> str:
     starts_with_h1 = bool(lines) and _HEADING_RE.match(lines[0]) and lines[0].startswith("# ")
     if not starts_with_h1:
         out += [f"[src: {url}]", f"# {title}", ""]
+    # heading-level normalization (RESEARCH: structural hierarchy errors make LLMs
+    # misunderstand document organization): page starts at level 1 and each heading is
+    # clamped to at most previous+1, so jumps like h2 -> h4 become h2 -> h3. Slugs and
+    # anchors are NOT renumbered — they stay identical to manifest/stored headings.
     hi = 0
+    prev_level = 0 if starts_with_h1 else 1        # injected title already occupies level 1
     for line in lines:
         m = _HEADING_RE.match(line)
         if m and hi < len(headings):
-            out.append(f"[src: {url}#{headings[hi].slug}]")
-            # emit the cleaned heading (anchors/links stripped -> fewer tokens, clean labels)
-            line = f"{'#' * len(m.group(1))} {headings[hi].text}"
+            h = headings[hi]
             hi += 1
+            level = min(h.level, prev_level + 1)
+            prev_level = level
+            out.append(f"[src: {url}#{h.slug}]")
+            line = f"{'#' * level} {h.text}"       # cleaned heading (anchors/links stripped)
         out.append(line)
     return "\n".join(out).strip() + "\n"

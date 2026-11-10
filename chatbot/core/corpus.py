@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -10,8 +11,10 @@ from pathlib import Path
 
 from .config import Config
 from .ingest import FetchedPage
-from .markdown_utils import annotate_page, extract_headings
+from .markdown_utils import annotate_page, extract_headings, normalize_ws
 from .tokens import count_tokens, verdict_for
+
+import math
 
 TOKENIZER_LABEL = "o200k_base (approx for llama-family, ~±10%; safety margins applied)"
 
@@ -88,17 +91,69 @@ def save_manifest(data_dir: Path, manifest: dict) -> None:
     _atomic_write(data_dir / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
 
 
+def _section_key(chunk: str) -> str:
+    """Normalized identity of a corpus chunk (markers/headings stripped, lowercased)."""
+    lines = [l for l in chunk.splitlines() if not l.startswith("[src:")]
+    t = " ".join(lines)
+    t = re.sub(r"#+", " ", t)
+    return normalize_ws(t).lower()
+
+
+def _strip_boilerplate(frags: list[tuple[dict, str]],
+                       threshold: float = 0.6, min_pages: int = 3):
+    """RESEARCH (dedup): text sections repeated on >=60% of pages (min 3) are corpus
+    boilerplate — CTAs, footer strips, repeated contact blurbs. They cost tokens and
+    skew retrieval toward whatever page repeats them most. Returns (cleaned frags, removed)."""
+    import collections
+
+    n = len(frags)
+    counts: collections.Counter = collections.Counter()
+    frag_keys: list[set] = []
+    for _, frag in frags:
+        keys = set()
+        for chunk in re.split(r"\n\s*\n", frag):
+            k = _section_key(chunk)
+            if len(k) >= 20:                      # ignore tiny chunks (bare headings)
+                keys.add(k)
+        frag_keys.append(keys)
+        counts.update(keys)
+    need = max(min_pages, math.ceil(threshold * n))
+    boiler = {k for k, c in counts.items() if c >= need}
+    if not boiler:
+        return frags, 0
+    out: list[tuple[dict, str]] = []
+    removed = 0
+    for (entry, frag), keys in zip(frags, frag_keys):
+        kept = []
+        for chunk in re.split(r"\n\s*\n", frag):
+            if _section_key(chunk) in boiler:
+                removed += 1
+                continue
+            kept.append(chunk)
+        out.append((entry, "\n\n".join(kept)))
+    return out, removed
+
+
 def build_corpus(data_dir: Path, manifest: dict, cfg: Config) -> None:
     """Assemble corpus.md (annotated bundle sent to the model), recount tokens, refresh verdict."""
     pages_dir = data_dir / "pages"
+    frags: list[tuple[dict, str]] = []
+    for entry in sorted(manifest["pages"], key=lambda p: p["url"]):
+        md = (pages_dir / entry["file"]).read_text(encoding="utf-8")
+        frags.append((entry, annotate_page(entry["url"], entry["title"], md)))
+
+    removed = 0
+    if cfg.site.dedup_boilerplate and len(frags) >= 4:
+        frags, removed = _strip_boilerplate(frags, threshold=cfg.site.boilerplate_threshold)
+    manifest["boilerplate_sections_removed"] = removed
+
     parts: list[str] = [
         f"SITE CONTENT for {manifest['site_name']} ({manifest['site_url']}).",
         "Each section is prefixed with [src: url#anchor] — cite these as the location.",
         "",
     ]
-    for entry in sorted(manifest["pages"], key=lambda p: p["url"]):
-        md = (pages_dir / entry["file"]).read_text(encoding="utf-8")
-        parts.append(annotate_page(entry["url"], entry["title"], md))
+    for _entry, frag in frags:
+        parts.append(frag)
         parts.append("")
     corpus = "\n".join(parts)
     _atomic_write(data_dir / "corpus.md", corpus)

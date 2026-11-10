@@ -38,3 +38,9 @@ assert(mdToHtml('style="position:fixed"').includes("&quot;"));        // attribu
 assert(mdToHtml('[{"url": "https://x"}]').includes("&quot;url&quot;"));
 
 console.log("md.js tests OK");
+
+// markdown links collapse to label text (L3: no <a> from model output)
+assert.strictEqual(mdToHtml("[Learn more →](/contact)"), "<p>Learn more →</p>");
+assert(!mdToHtml("[click](javascript:alert(1))").includes("<a"));
+assert(!mdToHtml("[click](javascript:alert(1))").includes("javascript"));
+console.log("link-collapse tests OK");

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import re
+
+from core.markdown_utils import normalize_paragraph_wrapping, normalize_ws
 from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -259,10 +261,46 @@ def _fallback_markdown(page_html: str) -> str | None:
         for el in root.xpath(_CHROME_XPATH):
             el.getparent().remove(el)
         md = markdownify(lhtml.tostring(root), heading_style="ATX", bullets="-")
+        md = _html_tables_to_markdown(md)
         md = re.sub(r"\n{3,}", "\n\n", md).strip()
         return md or None
     except Exception as e:
         log.warning("fallback markdown failed: %s", e)
+        return None
+
+
+def _html_tables_to_markdown(md: str) -> str:
+    """markdownify keeps <table> markup; LLMs read markdown tables far better.
+    Simple tables convert; colspan/rowspan/nested tables stay as HTML."""
+    for tbl in re.findall(r"<table[\s\S]*?</table>", md, flags=re.IGNORECASE):
+        converted = _convert_table(tbl)
+        if converted:
+            md = md.replace(tbl, converted)
+    return md
+
+
+def _convert_table(tbl_html: str) -> str | None:
+    try:
+        table = lhtml.fromstring(tbl_html)
+        if table.xpath(".//table") or table.xpath(".//*[@colspan or @rowspan]"):
+            return None                     # nested/merged cells -> keep raw HTML
+        rows = []
+        for tr in table.xpath(".//tr"):
+            cells = [normalize_ws(" ".join(cell.itertext())).replace("|", "\\|") or " "
+                     for cell in tr.xpath("./th|./td")]
+            if cells:
+                rows.append(cells)
+        if not rows:
+            return None
+        width = max(len(r) for r in rows)
+        rows = [r + [" "] * (width - len(r)) for r in rows]
+        lines = ["| " + " | ".join(rows[0]) + " |",
+                 "|" + "---|" * width]
+        for r in rows[1:]:
+            lines.append("| " + " | ".join(r) + " |")
+        return "\n".join(lines)
+    except Exception as e:
+        log.warning("table conversion failed: %s", e)
         return None
 
 
@@ -289,16 +327,41 @@ def extract_markdown(page_html: str, url: str, fallback_title: str,
     whole-DOM fallback for pages trafilatura under-extracts."""
     from trafilatura import extract
 
-    md = extract(
-        page_html, url=url, output_format="markdown", include_links=True,
-        include_tables=True, include_comments=False, include_images=False,
-        favor_recall=True, with_metadata=False,
-    )
+    base_kwargs = dict(url=url, output_format="markdown", include_links=True,
+                       include_tables=True, include_comments=False,
+                       include_images=False, with_metadata=False)
+    # recall-first: run both precision modes and MERGE. Measured trade-off on this repo:
+    # favor_recall keeps the heading hierarchy but drops markdown tables; the default
+    # mode keeps tables but flattens all headings. Neither alone is acceptable
+    # (RESEARCH: heading hierarchy is the #1 LLM quality check; tables are unrecoverable).
+    # Strategy: hierarchy wins the primary slot; missing tables are grafted from the other.
+    md = extract(page_html, favor_recall=True, **base_kwargs) or ""
+    md_alt = extract(page_html, favor_recall=False, **base_kwargs) or ""
+
+    def _headings(m: str) -> int:
+        return m.count("\n#") + (1 if m.lstrip().startswith("#") else 0)
+
+    def _tables(m: str) -> int:
+        return m.count("|---")
+
+    def _score(m: str) -> tuple[int, int, int]:
+        return (_headings(m), _tables(m), len(m))
+
+    if _score(md_alt) > _score(md):
+        md, md_alt = md_alt, md
+
+    # graft tables that only exist in the other candidate (header-line dedupe)
+    alt_tables = [b.strip() for b in re.split(r"\n\s*\n", md_alt)
+                  if b.lstrip().startswith("|") and "|---" in b
+                  and b.strip().splitlines()[0] not in md]
+    if alt_tables:
+        md = md.rstrip() + "\n\n" + "\n\n".join(alt_tables)
     if dom_len is None:
         dom_len = _dom_text_len(page_html)
     best = _choose_best(page_html, md, dom_len)
     if not best or len(best.strip()) < MIN_MARKDOWN_CHARS:
         return None
+    best = normalize_paragraph_wrapping(best)
     try:
         doc = lhtml.fromstring(page_html)
         title = _extract_title(doc, fallback_title)

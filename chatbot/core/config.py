@@ -21,6 +21,8 @@ class SiteConfig:
                                    # for local/staging crawls of a site whose sitemap lists production URLs
     suggestions: list = field(default_factory=list)  # suggested questions for the widget
     exclude_paths: list = field(default_factory=list)  # path substrings to skip
+    dedup_boilerplate: bool = True   # drop text sections repeated on >=threshold of pages
+    boilerplate_threshold: float = 0.6  # fraction of pages a section must appear on to count as boilerplate
 
 
 @dataclass

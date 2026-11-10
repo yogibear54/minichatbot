@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -12,6 +13,53 @@ from .config import Config
 from .modelinfo import apply_model_limits, fetch_model_limits
 
 log = logging.getLogger(__name__)
+
+
+
+def _first_party_markdown_map(client: httpx.Client, site_url: str,
+                              urls: list[str]) -> dict[str, str]:
+    """RESEARCH (first-party markdown): llms.txt advertises per-page Markdown versions.
+    Highest-fidelity source when available — no boilerplate classifier needed.
+    Returns {canonical_page_url: md_url} restricted to the discovered pages."""
+    base = urlsplit(site_url)
+    origin = f"{base.scheme}://{base.netloc}"
+    try:
+        r = client.get(origin + "/llms.txt")
+    except httpx.HTTPError:
+        return {}
+    if r.status_code != 200 or len(r.text.strip()) < 10:
+        return {}
+    mapping: dict[str, str] = {}
+    for link in re.findall(r"\(([^)]+?\.md)\)", r.text):
+        absu = urljoin(origin + "/", link)
+        p = urlsplit(absu)
+        if not p.path.endswith(".md"):
+            continue
+        page_url = urlunsplit((p.scheme, p.netloc, p.path[:-3], "", ""))
+        for u in urls:
+            if u.split("#")[0] == page_url:
+                mapping[u] = absu
+    return mapping
+
+
+def _fetch_first_party(client: httpx.Client, url: str, md_url: str):
+    """Fetch a first-party markdown page; returns (FetchedPage|None, status)."""
+    try:
+        r = client.get(md_url)
+    except httpx.HTTPError:
+        return None, "error"
+    if r.status_code != 200:
+        return None, "error"
+    md_text = r.text.strip()
+    if len(md_text) < 50:
+        return None, "skipped"
+    first_h1 = next((line[2:].strip() for line in md_text.splitlines()
+                     if line.startswith("# ")), url)
+    page = ingest.FetchedPage(url=url, title=first_h1, markdown=md_text + "\n")
+    page.etag = r.headers.get("etag")
+    page.last_modified = r.headers.get("last-modified")
+    return page, "ok"
+
 
 
 def full_ingest(cfg: Config, max_pages: int | None = None) -> dict:
@@ -41,10 +89,19 @@ def full_ingest(cfg: Config, max_pages: int | None = None) -> dict:
             if not found:
                 raise RuntimeError("No pages discovered — check start_url / sitemap / crawl_fallback")
 
+            first_party = _first_party_markdown_map(client, cfg.site.start_url, list(found))
+            if first_party:
+                manifest["first_party_markdown"] = sorted(first_party)
+                log.info("llms.txt: %d page(s) available as first-party markdown", len(first_party))
+
             pages: list[dict] = []
             skipped: list[dict] = []
             for i, (url, lastmod) in enumerate(sorted(found.items()), 1):
-                page, status = ingest.fetch_and_extract(client, url, renderer=renderer)
+                if url in first_party:
+                    page, status = _fetch_first_party(client, url, first_party[url])
+                    status = "ok" if status == "ok" else "skipped"
+                else:
+                    page, status = ingest.fetch_and_extract(client, url, renderer=renderer)
                 if status == "ok" and page is not None:
                     entry = corpus.new_page_entry(page)
                     entry["lastmod"] = lastmod
@@ -95,9 +152,14 @@ def refresh_site(cfg: Config) -> dict:
                 cfg.site.crawl_fallback, cfg.site.exclude_paths,
                 (urlsplit(cfg.site.start_url).netloc if cfg.site.map_sitemap_host else None)
             )
+            first_party = _first_party_markdown_map(
+                client, cfg.site.start_url, list(found)) if found else {}
             new_urls = [u for u in found if u not in by_url]
             for url in new_urls:
-                page, status = ingest.fetch_and_extract(client, url, renderer=renderer)
+                if url in first_party:
+                    page, status = _fetch_first_party(client, url, first_party[url])
+                else:
+                    page, status = ingest.fetch_and_extract(client, url, renderer=renderer)
                 if status == "ok" and page is not None:
                     entry = corpus.new_page_entry(page)
                     entry["lastmod"] = found.get(url)
