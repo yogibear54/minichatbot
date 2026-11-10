@@ -36,7 +36,6 @@ def normalize_loose(text: str) -> str:
     text = re.sub(r"[*_`#>\[\]]+", "", text)
     return normalize_ws(text)
 
-
 @dataclass
 class Heading:
     level: int
@@ -62,6 +61,49 @@ def extract_headings(markdown: str) -> list[Heading]:
             slug = f"{slug}-{n}"
         out.append(Heading(level=len(m.group(1)), text=text, slug=slug))
     return out
+
+
+def section_text_for_anchor(md: str, headings: list[Heading], anchor: str,
+                            max_words: int = 25) -> str:
+    """First ~max_words words (loose-normalized) of the section under the heading with
+    this slug — used to derive highlight quotes server-side (PLAN §3.2 grounding)."""
+    if not anchor:
+        return ""
+    idx = next((i for i, h in enumerate(headings) if h.slug == anchor), None)
+    if idx is None:
+        return ""
+    target = headings[idx]
+
+    lines = md.splitlines()
+    hs = list(extract_headings(md))
+    hi = 0
+    heading_line_idx = None
+    for li, line in enumerate(lines):
+        m = _HEADING_RE.match(line)
+        if m:
+            if hi < len(hs) and hs[hi].slug == anchor and clean_heading_text(m.group(2)).strip() == target.text:
+                heading_line_idx = li
+                break
+            hi += 1
+    if heading_line_idx is None:
+        return ""
+
+    content: list[str] = []
+    for line in lines[heading_line_idx + 1:]:
+        m2 = _HEADING_RE.match(line)
+        if m2 and len(m2.group(1)) <= target.level:
+            break
+        content.append(line)
+    text = normalize_loose(normalize_ws(" ".join(content)))
+    words = text.split()
+    if not words:
+        return ""
+    # prefer a complete first sentence (6+ words), else the first max_words words
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        s_words = sentence.split()
+        if len(s_words) >= 6:
+            return " ".join(s_words[:max_words])
+    return " ".join(words[:max_words])
 
 
 def annotate_page(url: str, title: str, markdown: str) -> str:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -232,8 +233,60 @@ def _extract_title(doc: lhtml.HtmlElement, fallback: str) -> str:
     return fallback
 
 
-def extract_markdown(page_html: str, url: str, fallback_title: str) -> FetchedPage | None:
-    """Main-content extraction -> markdown via trafilatura (JS-only pages return None)."""
+def _dom_text_len(page_html: str) -> int:
+    """Length of all body text — the reference an extractor is judged against."""
+    try:
+        doc = lhtml.fromstring(page_html)
+        return len(" ".join(t.strip() for t in doc.xpath("//body//text()") if t.strip()))
+    except lhtml.ParserError:
+        return 0
+
+
+_CHROME_XPATH = (".//script|.//style|.//noscript|.//nav|.//header|.//footer|.//aside|"
+                 ".//form|.//button|.//*[@aria-hidden='true']|.//*[@hidden]")
+
+
+def _fallback_markdown(page_html: str) -> str | None:
+    """Last-resort conversion of the (visible) DOM to markdown — used when trafilatura's
+    main-content heuristic drops large parts of a page (e.g. multi-section layouts where
+    no single <article> dominates). Captures everything; precision traded for recall."""
+    try:
+        from markdownify import markdownify
+
+        doc = lhtml.fromstring(page_html)
+        body = doc.find("body")
+        root = body if body is not None else doc
+        for el in root.xpath(_CHROME_XPATH):
+            el.getparent().remove(el)
+        md = markdownify(lhtml.tostring(root), heading_style="ATX", bullets="-")
+        md = re.sub(r"\n{3,}", "\n\n", md).strip()
+        return md or None
+    except Exception as e:
+        log.warning("fallback markdown failed: %s", e)
+        return None
+
+
+GATE_KEEP_RATIO = 0.6   # extraction must keep >=60% of visible DOM text, else fallback
+
+
+def _choose_best(page_html: str, md: str | None, dom_len: int) -> str | None:
+    """Quality gate: if extraction kept <60% of the visible DOM text, convert the whole
+    cleaned DOM instead and keep whichever is longer. (A low ratio usually means
+    trafilatura truncated trailing card/list sections on section-based pages.)"""
+    best = (md or "").strip()
+    if dom_len > 400 and len(best) < GATE_KEEP_RATIO * dom_len:
+        fb = _fallback_markdown(page_html)
+        if fb and len(fb) > len(best):
+            log.info("extraction gate: trafilatura kept %d/%d DOM chars -> using DOM fallback (%d)",
+                     len(best), dom_len, len(fb))
+            return fb
+    return best or None
+
+
+def extract_markdown(page_html: str, url: str, fallback_title: str,
+                     dom_len: int | None = None) -> FetchedPage | None:
+    """Main-content extraction -> markdown; with a DOM-text quality gate and a
+    whole-DOM fallback for pages trafilatura under-extracts."""
     from trafilatura import extract
 
     md = extract(
@@ -241,14 +294,17 @@ def extract_markdown(page_html: str, url: str, fallback_title: str) -> FetchedPa
         include_tables=True, include_comments=False, include_images=False,
         favor_recall=True, with_metadata=False,
     )
-    if not md or len(md.strip()) < MIN_MARKDOWN_CHARS:
+    if dom_len is None:
+        dom_len = _dom_text_len(page_html)
+    best = _choose_best(page_html, md, dom_len)
+    if not best or len(best.strip()) < MIN_MARKDOWN_CHARS:
         return None
     try:
         doc = lhtml.fromstring(page_html)
         title = _extract_title(doc, fallback_title)
     except lhtml.ParserError:
         title = fallback_title
-    return FetchedPage(url=url, title=title, markdown=md.strip() + "\n")
+    return FetchedPage(url=url, title=title, markdown=best.strip() + "\n")
 
 
 def fetch_and_extract(client: httpx.Client, url: str,
@@ -260,10 +316,10 @@ def fetch_and_extract(client: httpx.Client, url: str,
     PLAN §9.1) and conditional-GET skipping is bypassed (raw HTML never changes even
     when injected content does — the hash diff remains the source of truth)."""
     if renderer is not None:
-        html = renderer.html(url)
+        html = renderer.visible_html(url)
         if html is None:
             return None, "error"
-        page = extract_markdown(html, canonical_url(url), url)
+        page = extract_markdown(html, canonical_url(url), url, dom_len=_dom_text_len(html))
         if page is None:
             return None, "skipped"
         return page, "ok"
@@ -321,6 +377,36 @@ class JsRenderer:
             return None
         except Exception as e:
             log.warning("render failed %s: %s", url, e)
+            return None
+
+    def visible_html(self, url: str) -> str | None:
+        """Rendered page reduced to its VISIBLE body content: chrome (nav/header/footer/
+        forms/buttons/dialogs) and computed-invisible elements (display:none, opacity:0 —
+        GSAP pre-animation states, closed modals) are removed. Extraction then sees
+        exactly what a visitor sees, and the DOM-text quality gate in extract_markdown
+        gets an accurate reference."""
+        try:
+            try:
+                self.page.goto(url, wait_until="networkidle", timeout=self.timeout_ms)
+            except Exception:
+                pass
+            for _ in range(4):
+                try:
+                    self.page.evaluate("""() => {
+                      const doomed = [];
+                      document.body.querySelectorAll('script,style,noscript,nav,header,footer,aside,form,button,[aria-hidden="true"],[role="dialog"],dialog,.modal,[hidden]').forEach(e => doomed.push(e));
+                      document.body.querySelectorAll('*').forEach(e => {
+                        const s = getComputedStyle(e);
+                        if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) doomed.push(e);
+                      });
+                      doomed.forEach(e => e.remove());
+                    }""")
+                    break
+                except Exception:
+                    time.sleep(0.3 * (attempt + 1))
+            return self.page.content()
+        except Exception as e:
+            log.warning("visible render failed %s: %s", url, e)
             return None
 
     def close(self) -> None:

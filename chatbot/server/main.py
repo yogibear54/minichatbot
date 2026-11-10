@@ -12,19 +12,21 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 
 from core import corpus
 from core.config import Config
-from server.citations import (KnowledgeBase, extract_citations, rescue_citations,
-                              validate_citations)
+from server.citations import (KnowledgeBase, extract_citations, ground_citations,
+                              rescue_citations)
 from server.llm import LLMError, OpenAICompatClient
-from server.prompts import build_messages, build_system_prompt
+from server.prompts import (CITATION_SCHEMA, build_messages, build_system_prompt)
 from server.sessions import Store
+from server.streamparse import StreamedAnswerParser
 
 WIDGET_DIR = Path(__file__).resolve().parent.parent / "widget"
 SESSION_ID_RE = re.compile(r"^[a-f0-9]{8,64}$")
 
-# Live-stream holdback: emit tokens with a small lag so the trailing CITATIONS
-# block (and its fence) never reaches the widget (PLAN §3.2 protocol).
+# Live-stream holdback: emit tokens with a small lag so the trailing citations block
+# never reaches the widget — matched in marker form (CITATIONS: [...), fenced array form
+# (```[{"url":...) or bare array form ([{"url":...) (PLAN §3.2 protocol).
 _HOLD_CHARS = 24
-_CIT_INLINE_RE = re.compile(r"CITATIONS:\s*\[", re.IGNORECASE)
+_CIT_INLINE_RE = re.compile(r"CITATIONS\s*:\s*|\[\s*\{\s*\"url\"\s*:", re.IGNORECASE)
 
 GUARD_POLICY = """You are a safety classifier for a website help chatbot. Classify the user
 message using MLCommons hazard categories: S1 violent crimes, S2 non-violent crimes,
@@ -37,10 +39,31 @@ Respond with exactly one word: 'safe' or the single category code (for example: 
 def create_app(cfg: Config) -> FastAPI:
     app = FastAPI(title="site-chatbot", docs_url=None, redoc_url=None)
 
+    from core.modelinfo import apply_model_limits, fetch_model_limits
+
+    apply_model_limits(cfg, fetch_model_limits(cfg.chat.base_url, cfg.chat.model,
+                                               cfg.api_key(cfg.chat.api_key_env)))
     manifest = corpus.load_manifest(cfg.data_dir)
     if manifest is None or not (cfg.data_dir / "corpus.md").exists():
         raise RuntimeError(
             f"No knowledge bundle at {cfg.data_dir} — run `python cli.py ingest` first.")
+    if manifest.get("model", {}).get("context_window") != cfg.chat.context_window:
+        # model changed since ingest — corpus tokens don't depend on the model, so just
+        # recompute the verdict against the new limits and persist the metadata.
+        from core.tokens import verdict_for
+        v = manifest.get("verdict", {})
+        status, reason = verdict_for(
+            v.get("corpus_tokens", 0), cfg.chat.context_window, cfg.chat.max_output,
+            cfg.budgets.pass_tokens, cfg.budgets.warn_tokens, cfg.budgets.safety_margin_pct)
+        old_status = v.get("status", "?")
+        manifest["model"]["context_window"] = cfg.chat.context_window
+        v["status"], v["reason"] = status, reason
+        corpus.save_manifest(cfg.data_dir, manifest)
+        print(f"[serve] verdict recomputed for {cfg.chat.model}: {old_status} -> {status} "
+              f"({reason})")
+        if old_status != "FAIL" and status == "FAIL":
+            print("[serve] refusing to serve — the new model's context cannot hold this "
+                  "corpus. Trim the site or switch back to the previous model.")
     if manifest["verdict"]["status"] == "FAIL":
         raise RuntimeError(
             "Bundle verdict is FAIL (" + manifest["verdict"]["reason"] + "). "
@@ -51,7 +74,12 @@ def create_app(cfg: Config) -> FastAPI:
     kb.load(manifest)
 
     corpus_md = (cfg.data_dir / "corpus.md").read_text(encoding="utf-8")
-    state = {"system_prompt": build_system_prompt(cfg.site.name, corpus_md), "manifest": manifest}
+    state = {
+        "manifest": manifest,
+        "sys_trailer": build_system_prompt(cfg.site.name, corpus_md, protocol="trailer"),
+        "sys_structured": build_system_prompt(cfg.site.name, corpus_md, protocol="structured"),
+    }
+    protocol = cfg.chat.protocol if cfg.chat.protocol in ("trailer", "structured") else "trailer"
 
     chat_client = OpenAICompatClient(
         cfg.chat.base_url, cfg.api_key(cfg.chat.api_key_env), cfg.chat.extra_headers)
@@ -67,8 +95,8 @@ def create_app(cfg: Config) -> FastAPI:
         if m:
             kb.load(m)
             state["manifest"] = m
-            state["system_prompt"] = build_system_prompt(cfg.site.name,
-                                                         (cfg.data_dir / "corpus.md").read_text(encoding="utf-8"))
+            state["sys_trailer"] = build_system_prompt(cfg.site.name, md, protocol="trailer")
+            state["sys_structured"] = build_system_prompt(cfg.site.name, md, protocol="structured")
 
     def sse(obj: dict) -> str:
         return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
@@ -125,6 +153,11 @@ def create_app(cfg: Config) -> FastAPI:
         return Response((WIDGET_DIR / "chat.js").read_text(encoding="utf-8"),
                         media_type="application/javascript")
 
+    @app.get("/md.js")
+    async def md_js() -> Response:
+        return Response((WIDGET_DIR / "md.js").read_text(encoding="utf-8"),
+                        media_type="application/javascript")
+
     @app.get("/chat.css")
     async def chat_css() -> Response:
         return Response((WIDGET_DIR / "chat.css").read_text(encoding="utf-8"),
@@ -171,35 +204,84 @@ def create_app(cfg: Config) -> FastAPI:
             history = store.get_history(session_id)
             resolved_page = kb.resolve(page_url) if page_url else ""
             resolved_title = kb.pages[resolved_page]["title"] if resolved_page else ""
-            messages = build_messages(state["system_prompt"], history, message,
-                                      resolved_page, resolved_title)
-            acc: list[str] = []
-            full = ""
-            emitted = 0  # chars of the display text already streamed
-            try:
-                async for delta in chat_client.stream_chat(
-                        cfg.chat.model, messages, cfg.chat.max_output, cfg.chat.temperature):
-                    acc.append(delta)
-                    full = "".join(acc)
-                    m = _CIT_INLINE_RE.search(full)
-                    limit = m.start() if m else max(0, len(full) - _HOLD_CHARS)
-                    if limit > emitted:
-                        yield sse({"type": "token", "text": full[emitted:limit]})
-                        emitted = limit
-            except LLMError as e:
-                if not acc:
-                    yield sse({"type": "error", "message": f"model unavailable: {e}"})
+            sysmsg = state["sys_structured"] if protocol == "structured" else state["sys_trailer"]
+            messages = build_messages(sysmsg, history, message, resolved_page, resolved_title)
+
+            holder: dict = {}
+
+            async def trailer_events():
+                """Stream the trailer-protocol answer (prose + CITATIONS block with a
+                holdback so the block never reaches the visitor)."""
+                acc: list[str] = []
+                emitted = 0
+                try:
+                    async for delta in chat_client.stream_chat(
+                            cfg.chat.model, messages, cfg.chat.max_output, cfg.chat.temperature):
+                        acc.append(delta)
+                        full = "".join(acc)
+                        m = _CIT_INLINE_RE.search(full)
+                        limit = m.start() if m else max(0, len(full) - _HOLD_CHARS)
+                        if limit > emitted:
+                            yield sse({"type": "token", "text": full[emitted:limit]})
+                            emitted = limit
+                except LLMError as e:
+                    if not acc:
+                        holder["error"] = str(e)
+                        return
+                    yield sse({"type": "error", "message": "stream interrupted"})
+                holder["full"] = "".join(acc)
+
+            display = ""
+            raw_citations: list | None = None
+
+            if protocol == "structured":
+                parser = StreamedAnswerParser()
+                structured_failed = None
+                try:
+                    async for delta in chat_client.stream_chat(
+                            cfg.chat.model, messages, cfg.chat.max_output, cfg.chat.temperature,
+                            response_format=CITATION_SCHEMA):
+                        text = parser.feed(delta)
+                        if text:
+                            yield sse({"type": "token", "text": text})
+                except LLMError as e:
+                    structured_failed = str(e)
+
+                obj = None
+                try:
+                    obj = json.loads(parser.raw)
+                except (json.JSONDecodeError, ValueError):
+                    obj = None
+
+                if structured_failed and not parser.final_display():
+                    # upstream rejected response_format -> retry once with trailer protocol
+                    print(f"[chat] structured failed ({structured_failed[:80]}) - trailer fallback")
+                    messages = build_messages(state["sys_trailer"], history, message,
+                                              resolved_page, resolved_title)
+                    async for ev in trailer_events():
+                        yield ev
+                    if "error" in holder:
+                        yield sse({"type": "error", "message": f"model unavailable: {holder['error']}"})
+                        yield sse({"type": "done", "finish": "error"})
+                        return
+                    display, raw_citations = extract_citations(holder.get("full", ""))
+                else:
+                    display = (obj or {}).get("answer") or parser.final_display()
+                    raw_citations = (obj or {}).get("citations") or []
+            else:
+                async for ev in trailer_events():
+                    yield ev
+                if "error" in holder:
+                    yield sse({"type": "error", "message": f"model unavailable: {holder['error']}"})
                     yield sse({"type": "done", "finish": "error"})
                     return
-                yield sse({"type": "error", "message": "stream interrupted"})
+                full = holder.get("full", "")
+                display, raw_citations = extract_citations(full)
 
-            full = "".join(acc)
-            display, raw = extract_citations(full)
-            if len(display) > emitted:
-                yield sse({"type": "token", "text": display[emitted:]})
-            citations = validate_citations(raw, kb) if raw else []
+            # -- grounding: repair anchors (fuzzy section match) + derive quotes --------
+            citations = ground_citations(raw_citations or [], kb)
             if not citations and display.strip() and len(display) > 40:
-                # model omitted/mangled the block (small-model risk, PLAN §9.6) ->
+                # model omitted/mangled citations (small-model risk, PLAN §9.6) ->
                 # rescue: best term-overlap page, current page preferred when known
                 citations = rescue_citations(message, kb, prefer_url=resolved_page or None)
             if citations:

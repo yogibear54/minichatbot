@@ -1,33 +1,58 @@
-"""Citation extraction + validation against the manifest (PLAN §3.2, L3 output layer)."""
+"""Citation extraction, validation and server-side grounding (PLAN §3.2, L3 output layer)."""
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from typing import Callable
 
-from core.markdown_utils import normalize_loose, normalize_ws
+from core.markdown_utils import (
+    Heading,
+    normalize_loose,
+    normalize_ws,
+    section_text_for_anchor,
+    slugify,
+)
 
-_CITATIONS_RE = re.compile(r"CITATIONS:\s*(\[)", re.IGNORECASE)
+_CITATIONS_RE = re.compile(r"CITATIONS\s*:\s*", re.IGNORECASE)   # protocol marker
+_BARE_ARRAY_RE = re.compile(r"\[\s*\{\s*\"url\"\s*:")               # bare/fenced array w/o marker
+_TRAILING_LABEL_RE = re.compile(r"(?:#{1,6}\s*)?[*_\s]*citations?[*_\s]*:?[*_\s]*$", re.IGNORECASE)
 
 
 def extract_citations(text: str) -> tuple[str, list[dict] | None]:
     """Split a finished answer into (display_text, raw_citation_dicts|None).
 
-    The CITATIONS block is everything from the marker (and any surrounding code
-    fence) to the end of the message. Returns raw dicts unparsed; parse errors
-    yield (text_without_block, None) so broken JSON never reaches the widget.
+    Recognizes the block in three shapes (whichever appears last):
+      - marker form:   CITATIONS: [...]        (possibly fenced)
+      - fenced array:  ```json [ {"url": ...}] ```
+      - bare array:    [{"url": ...}]
+    Parse errors yield (text_without_block, None) so broken JSON never reaches the
+    widget; truncated (max_output) blocks land here too and the rescue chip covers
+    navigation instead.
     """
-    m = None
+    marker = array = None
     for m in _CITATIONS_RE.finditer(text):
-        pass
-    if m is None:
+        marker = m
+    for m in _BARE_ARRAY_RE.finditer(text):
+        array = m
+
+    block_start = None
+    if array:
+        # the array is the real content — prefer it (a bolded "**Citations:**" label
+        # also matches the marker regex and would otherwise land mid-markdown)
+        block_start = array.start()
+    elif marker:
+        block_start = marker.start()
+    if block_start is None:
         return text, None
-    start = m.start()
-    display = text[:start].rstrip()
-    # strip a trailing code fence opener like ``` or ```json right before the marker
-    display = re.sub(r"```[a-z]*\s*$", "", display).rstrip()
-    blob = text[m.end() - 1:]  # starts at '['
-    blob = blob.strip()
+
+    display = text[:block_start].rstrip()
+    display = _TRAILING_LABEL_RE.sub("", display).rstrip()            # stray "Citations:" label
+    display = re.sub(r"```[a-z]*\s*$", "", display).rstrip()          # trailing fence opener
+    bracket = text.find("[", block_start)
+    if bracket == -1:
+        return display, None
+    blob = text[bracket:].strip()
     if blob.endswith("```"):
         blob = blob[:-3].strip()
     try:
@@ -57,9 +82,11 @@ class KnowledgeBase:
                 continue
             self.pages[entry["url"]] = {
                 "title": entry["title"],
+                "md_raw": md,
                 "md_normalized": normalize_ws(md),
                 "md_loose": normalize_loose(md),
                 "anchors": {h["slug"] for h in entry.get("headings", [])},
+                "headings": entry.get("headings", []),
             }
 
     def get(self, url: str) -> dict | None:
@@ -83,8 +110,98 @@ class KnowledgeBase:
         return None
 
 
+def ground_citations(candidates: list[dict], kb: KnowledgeBase, limit: int = 3) -> list[dict]:
+    """Repair + validate model citations server-side (the §3.2 grounding upgrade):
+    1. resolve the URL against the manifest (allowlist)
+    2. anchor: keep valid slugs; otherwise fuzzy-match the section name against headings
+    3. quote: keep verbatim matches; otherwise DERIVE it from the stored section text
+       (so highlighting works without the model having copied text perfectly)
+    Falls back to page-level citations; every emitted target is guaranteed real."""
+    grounded: list[dict] = []
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        url = str(c.get("url", "")).strip()
+        page = kb.get(url)
+        if page is None:
+            continue
+
+        anchor_req = str(c.get("anchor", "")).strip().lstrip("#")
+        section = str(c.get("section", "")).strip()
+        anchor, heading_text = "", ""
+        if anchor_req and anchor_req in page["anchors"]:
+            anchor = anchor_req
+            heading_text = next((str(h["text"]) for h in page["headings"]
+                                 if str(h["slug"]) == anchor), "")
+        elif section:
+            anchor, heading_text = fuzzy_anchor(section, page["headings"])
+
+        quote = normalize_ws(str(c.get("quote", "")))
+        derived = False
+        quote_ok = 8 <= len(quote) <= 400 and (
+            quote in page["md_normalized"] or normalize_loose(quote) in page["md_loose"])
+        if not quote_ok:
+            dheads = [Heading(level=int(h["level"]), text=str(h["text"]), slug=str(h["slug"]))
+                      for h in page["headings"]]
+            dq = section_text_for_anchor(page["md_raw"], dheads, anchor)
+            if len(dq) >= 8:
+                quote, derived = dq, True
+            else:
+                quote = ""
+
+        label = heading_text or str(c.get("label") or page["title"])
+        grounded.append({
+            "url": url + (f"#{anchor}" if anchor else ""),
+            "anchor": anchor,
+            "quote": quote,
+            "label": str(label),
+            **({"derived": True} if derived else {}),
+        })
+        if len(grounded) >= limit:
+            break
+    return grounded
+
+
+def fuzzy_anchor(section: str, headings: list[dict]) -> tuple[str, str]:
+    """Match a plain-text section name to the page's heading tree.
+    Returns (anchor_slug, heading_text) or ("", ""). Tolerates slug-ish inputs and typos."""
+    if not section:
+        return "", ""
+    s = normalize_ws(section).strip().lstrip("#").strip()
+    if not s:
+        return "", ""
+    sslug = slugify(s)
+
+    def by_text(name: str) -> tuple[str, str] | None:
+        for h in headings:
+            if normalize_ws(str(h["text"])).lower() == name.lower():
+                return str(h["slug"]), str(h["text"])
+        return None
+
+    for h in headings:                                   # exact slug / exact text
+        if str(h["slug"]) == sslug:
+            return str(h["slug"]), str(h["text"])
+    hit = by_text(s)
+    if hit:
+        return hit
+    close = difflib.get_close_matches(sslug, [str(h["slug"]) for h in headings], n=1, cutoff=0.6)
+    if close:
+        for h in headings:
+            if str(h["slug"]) == close[0]:
+                return str(h["slug"]), str(h["text"])
+    close = difflib.get_close_matches(s.lower(),
+                                      [normalize_ws(str(h["text"])).lower() for h in headings],
+                                      n=1, cutoff=0.6)
+    if close:
+        hit = by_text(close[0])
+        if hit:
+            return hit
+    return "", ""
+
+
 def validate_citations(candidates: list[dict], kb: KnowledgeBase, limit: int = 3) -> list[dict]:
-    """Keep only citations whose url, anchor, and verbatim quote all check out."""
+    """Strict path (kept for reference/compat): keep only citations whose url, anchor,
+    and verbatim quote all check out. Prefer ground_citations for serving."""
     valid: list[dict] = []
     for c in candidates:
         url = str(c.get("url", "")).strip()

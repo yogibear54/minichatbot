@@ -171,7 +171,7 @@
           if (ev.type === "token") {
             acc += ev.text;
             entry.text = acc;
-            bot.textContent = acc;
+            bot.innerHTML = mdToHtml(acc);      // GFM subset, safe-by-construction (md.js)
             bot.appendChild(cursor);
             scrollDown();
           }
@@ -234,7 +234,8 @@
         bubble("user", m.text);
         return;
       }
-      var b = bubble("bot", m.text);
+      var b = bubble("bot");
+      if (m.text) b.innerHTML = mdToHtml(m.text);   // restored transcript renders markdown too
       if (m.sources && m.sources.length) {
         b._sources = m.sources;
         renderSources(b, m.sources);

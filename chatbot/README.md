@@ -120,6 +120,31 @@ Embed on any page of the site:
 
 Standalone chat UI: `http://localhost:8000/chat`.
 
+## Citation protocols (config `chat.protocol`)
+
+- **`trailer`** (default): prose answer + trailing `CITATIONS:` block — works with any instruct model.
+- **`structured`**: `response_format: json_schema` enforces `{answer, citations[]}` — requires a
+  model with real enforcement (metadata: `GET /api/v1/models?supported_parameters=structured_outputs`;
+  enforcement quality still varies per upstream — always verify, see below).
+  The answer streams normally; the citations payload is parsed server-side and never shown raw.
+
+Both protocols pass through the same **grounding pipeline**: URL allowlist → fuzzy section-name →
+anchor match against the stored heading tree → verbatim quote kept, or a quote **derived from the
+stored section text** (marked `"derived": true`). Result: citation chips + highlighting work even
+when the model paraphrases or omits quotes; if the model cites nothing at all, a current-page-aware
+rescue chip (`≈`) still points somewhere real.
+
+**Validating a new model** (before putting it in config):
+
+```bash
+OPENROUTER_API_KEY=... .venv/bin/python scripts/validate_model.py \
+    --config lotus/config.yaml --models <model-id> --protocol structured   # or trailer
+```
+
+Verdict thresholds: ≥60% grounded citations, no hard failures, median TTFT < 6s. Measured on the
+lotus bundle: trailer+llama-3.1-8b 5/5 grounded (PASS); structured+mistral-small-24b 3/5 (PASS);
+structured+gpt-oss-20b 0/5 with invalid JSON (FAIL — avoid).
+
 ## Token validation (PLAN §5)
 
 The ingest verdict gates serving:
@@ -127,6 +152,12 @@ The ingest verdict gates serving:
 - **WARN** ≤ 100k — fits; expect slower cold prefill + lost-in-the-middle risk
 - **FAIL** above that (or above the model's fitted capacity) — markdown-only mode refused;
   print remedies (trim site / split subsite / per-language bundles / future retrieval mode)
+
+**Model limits auto-sync**: at ingest/serve the bot queries the provider's models
+endpoint (`context_length`, `top_provider.max_completion_tokens`) — the provider value
+wins over `context_window` (config value = offline fallback), and `max_output` is clamped
+if it exceeds the model's completion cap. A mismatch prints a warning and is recorded in
+`manifest.json` (`model.limits_source`).
 
 Tokens counted with `o200k_base` (approx for llama-family, ±10%) — margins compensate.
 Phase 0 (`scripts/phase0_benchmark.py`) measures real TTFT cached/uncached at 1k–100k

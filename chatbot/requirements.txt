@@ -6,3 +6,4 @@ playwright>=1.40
 PyYAML>=6.0
 tiktoken>=0.7
 lxml>=5.0
+markdownify>=0.13

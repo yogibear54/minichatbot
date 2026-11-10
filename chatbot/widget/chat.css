@@ -35,6 +35,18 @@ body {
   vertical-align: -2px; animation: cb-blink 1s steps(2) infinite; }
 @keyframes cb-blink { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .cb-msg .cursor { animation: none; } }
+.cb-msg.bot .cb-md-h { font-weight: 650; margin: 6px 0 2px; }
+.cb-msg.bot p { margin: 0 0 6px; }
+.cb-msg.bot p:last-child { margin-bottom: 0; }
+.cb-msg.bot ul, .cb-msg.bot ol { margin: 4px 0 6px; padding-left: 20px; }
+.cb-msg.bot li { margin: 2px 0; }
+.cb-msg.bot blockquote { margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--cb-border);
+  color: var(--cb-muted); }
+.cb-msg.bot code { background: rgba(0,0,0,.06); border-radius: 4px; padding: 1px 5px;
+  font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.cb-msg.bot pre { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 10px;
+  overflow-x: auto; margin: 6px 0; }
+.cb-msg.bot pre code { background: none; color: inherit; padding: 0; font-size: 12.5px; }
 .cb-sources { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
 .cb-source { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .cb-source a { font-size: 12.5px; color: var(--cb-accent); text-decoration: none;

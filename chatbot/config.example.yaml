@@ -14,8 +14,13 @@ chat:
   base_url: "https://openrouter.ai/api/v1"
   api_key_env: "OPENROUTER_API_KEY"
   model: "meta-llama/llama-3.1-8b-instruct"   # revisit after Phase 0 benchmark
+  # Citation protocol:
+  #   trailer    = prose + trailing CITATIONS block (any instruct model)
+  #   structured = json_schema-enforced {answer, citations[]} — needs a model with real
+  #                enforcement; verify candidates with scripts/validate_model.py
+  protocol: "trailer"
   context_window: 131072
-  max_output: 700
+  max_output: 900
   temperature: 0.2
   extra_headers:                  # OpenRouter attribution (optional)
     HTTP-Referer: "https://your-bot-host.example"

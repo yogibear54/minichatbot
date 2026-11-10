@@ -9,6 +9,7 @@ import httpx
 
 from . import corpus, ingest
 from .config import Config
+from .modelinfo import apply_model_limits, fetch_model_limits
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +22,10 @@ def full_ingest(cfg: Config, max_pages: int | None = None) -> dict:
 
     manifest = corpus.init_manifest(cfg)
     limit = max_pages or cfg.site.max_pages
+
+    # provider ground truth wins for context_window; config value = offline fallback
+    info = apply_model_limits(cfg, fetch_model_limits(cfg.chat.base_url, cfg.chat.model,
+                                                      cfg.api_key(cfg.chat.api_key_env)))
 
     renderer = None
     if cfg.site.render_js:
@@ -58,6 +63,11 @@ def full_ingest(cfg: Config, max_pages: int | None = None) -> dict:
 
     manifest["pages"] = pages
     manifest["skipped"] = skipped
+    if info:
+        manifest["model"]["max_completion"] = info.get("max_completion")
+        manifest["model"]["limits_source"] = "openrouter-api"
+    else:
+        manifest["model"]["limits_source"] = "config-fallback"
     corpus.build_corpus(data_dir, manifest, cfg)
     return manifest
 
@@ -69,6 +79,8 @@ def refresh_site(cfg: Config) -> dict:
     if manifest is None:
         return {"action": "full", "manifest": full_ingest(cfg)}
 
+    apply_model_limits(cfg, fetch_model_limits(cfg.chat.base_url, cfg.chat.model,
+                                               cfg.api_key(cfg.chat.api_key_env)))
     limit = cfg.site.max_pages
     by_url = {p["url"]: p for p in manifest["pages"]}
     changed: list[str] = []

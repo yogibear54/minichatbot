@@ -29,9 +29,13 @@ class ChatConfig:
     api_key_env: str = "OPENROUTER_API_KEY"
     model: str = "meta-llama/llama-3.1-8b-instruct"
     context_window: int = 131072
-    max_output: int = 700
+    max_output: int = 900
     temperature: float = 0.2
     extra_headers: dict = field(default_factory=dict)
+    # "trailer"   = prose answer + trailing CITATIONS block (works with any instruct model)
+    # "structured" = response_format json_schema {answer, citations[]} — requires a model
+    #                with real structured-output enforcement (verify: scripts/structured_probe.py)
+    protocol: str = "trailer"
 
 
 @dataclass
