@@ -109,7 +109,7 @@ Blocked-question UX: polite refusal, never echo the request, offer site-related 
 
 ### 3.4 Widget (embeddable)
 - One `<script>` tag: `<script src="https://bot.example/widget.js" data-site="SITE_ID" data-endpoint="https://bot.example">`.
-- Injects floating launcher + **iframe** chat panel (style isolation; theming via CSS custom props passed by postMessage).
+- Injects floating launcher + **iframe** chat panel (style isolation; theming via optional `data-*` color attributes on the embed script tag → forwarded as CSS custom props in the postMessage handshake, applied against an allowlist in `widget/theme.js`).
 - Renders streamed tokens live; under every answer, a **Sources row of citation chips** — each chip is a **native hyperlink** `<a href="{url}#{anchor}" target="_blank" rel="noopener">` (`Page Title › Section`):
   - Works with zero JS: normal browser navigation to the page section; supports ctrl/middle-click new tab, right-click → copy link, keyboard and screen-reader access. Fail-open by design — the bot machinery is never required to reach the content.
   - The `href` may carry the quoted text too (`url#anchor#:~:text=…`): STTF-capable browsers (Chrome 80+, Firefox 126+, Safari 16.1+) natively scroll **and** highlight on arrival; if the quote no longer matches, the `#anchor` still scrolls. Copy-link gives users a shareable deep link.

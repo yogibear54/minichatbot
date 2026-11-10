@@ -47,6 +47,9 @@
     if (PARENT_ORIGIN !== "*" && ev.origin !== PARENT_ORIGIN) return;
     if (ev.data && ev.data.type === "PARENT_ALIVE") {
       bridge = true;
+      if (ev.data.theme && window.CBTheme) {
+        try { CBTheme.apply(document.documentElement.style, ev.data.theme); } catch (e) {}
+      }
       // restored messages rendered before the handshake lack Show me buttons — add them
       restoredBots.forEach(function (b) {
         if (b._sources && b.querySelector(".cb-sources")) {

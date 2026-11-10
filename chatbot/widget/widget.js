@@ -7,6 +7,9 @@
  *
  * Usage on any site:
  *   <script src="https://bot-host.example/widget.js" data-endpoint="https://bot-host.example" defer></script>
+ * Theming (optional, PLAN §3.4): data-accent data-accent-weak data-bg data-fg
+ *   data-muted data-border data-user-bg data-user-fg color attributes on the tag;
+ *   forwarded to the iframe in the PARENT_ALIVE handshake (allowlist: theme.js).
  */
 (function () {
   "use strict";
@@ -15,6 +18,15 @@
   var ENDPOINT = (script.dataset.endpoint || new URL(script.src).origin).replace(/\/$/, "");
   var ORIGIN = new URL(ENDPOINT, location.href).origin;
   var PENDING_KEY = "cb-pending-guide";
+  // theming: data-* colors on the script tag -> {"--cb-*": value} for the iframe
+  // (mapping mirrors widget/theme.js; the iframe validates before applying)
+  var THEME_KEYS = { accent: "--cb-accent", accentWeak: "--cb-accent-weak", bg: "--cb-bg",
+                     fg: "--cb-fg", muted: "--cb-muted", border: "--cb-border",
+                     userBg: "--cb-user-bg", userFg: "--cb-user-fg" };
+  var THEME = {};
+  for (var tk in THEME_KEYS) {
+    if (script.dataset[tk]) THEME[THEME_KEYS[tk]] = script.dataset[tk];
+  }
   var open = false, iframe, launcher, styleEl, hlRegistered = false;
   var reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -78,7 +90,7 @@
     if (ev.origin !== ORIGIN || !ev.data) return;
     var d = ev.data;
     if (d.type === "GUIDE") handleGuide(d);
-    else if (d.type === "READY") { try { ev.source.postMessage({ type: "PARENT_ALIVE", page: currentPageCtx() }, ORIGIN); } catch (e) {} }
+    else if (d.type === "READY") { try { ev.source.postMessage({ type: "PARENT_ALIVE", page: currentPageCtx(), theme: THEME }, ORIGIN); } catch (e) {} }
     else if (d.type === "CLOSE") if (open) toggle();
   });
 

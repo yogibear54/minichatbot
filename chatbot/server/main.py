@@ -165,6 +165,11 @@ def create_app(cfg: Config) -> FastAPI:
         return Response((WIDGET_DIR / "md.js").read_text(encoding="utf-8"),
                         media_type="application/javascript")
 
+    @app.get("/theme.js")
+    async def theme_js() -> Response:
+        return Response((WIDGET_DIR / "theme.js").read_text(encoding="utf-8"),
+                        media_type="application/javascript")
+
     @app.get("/chat.css")
     async def chat_css() -> Response:
         return Response((WIDGET_DIR / "chat.css").read_text(encoding="utf-8"),

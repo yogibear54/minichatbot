@@ -68,9 +68,12 @@ def test_info_and_assets(app_and_client):
     assert info["site_name"] == "Acme"
     assert info["verdict"] == "PASS"
     assert "Acme" in client.get("/chat").text
+    assert "/theme.js" in client.get("/chat").text      # iframe loads the theme module
     assert "cb-launcher" in client.get("/widget.js").text
+    assert "THEME_KEYS" in client.get("/widget.js").text  # parent forwards data-* theming
     assert client.get("/chat.css").status_code == 200
     assert "READY" in client.get("/chat.js").text
+    assert "CBTheme" in client.get("/theme.js").text
 
 
 def test_invalid_message_rejected(app_and_client):

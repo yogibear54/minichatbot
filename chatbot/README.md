@@ -118,7 +118,50 @@ Embed on any page of the site:
 <script src="http://localhost:8000/widget.js" data-endpoint="http://localhost:8000" defer></script>
 ```
 
+Optional color attributes on that tag restyle the chat panel — see [Theming](#theming).
+
 Standalone chat UI: `http://localhost:8000/chat`.
+
+## Theming
+
+All theming is done with color attributes on the embed script tag — no CSS files to
+override, no config keys. The widget reads them from the tag, forwards them to the chat
+iframe in the postMessage handshake, and they are applied as CSS custom properties after
+allowlist validation (`widget/theme.js`): each value must be a plain color — hex,
+`rgb()`/`rgba()`/`hsl()`/`hsla()`, or a CSS color name — anything else is dropped and the
+corresponding default stays.
+
+```html
+<script src="http://localhost:8000/widget.js" data-endpoint="http://localhost:8000"
+        data-accent="#7c3aed" data-accent-weak="#f3e8ff"
+        data-bg="#141414" data-fg="#f5f5f5"
+        data-muted="#a3a3a3" data-border="#333"
+        data-user-bg="#7c3aed" data-user-fg="#ffffff" defer></script>
+```
+
+| Attribute | Default | What it colors |
+|---|---|---|
+| `data-accent` | `#2563eb` | send button, avatar, source-chip links, hover highlights — pick one dark enough for white icons/text |
+| `data-accent-weak` | `#eff6ff` | tinted backgrounds: source chips, "answering with context of" banner |
+| `data-bg` | `#ffffff` | panel background — set it dark for dark mode |
+| `data-fg` | `#1a1a1a` | text; bot-bubble and inline-code tints derive from it automatically |
+| `data-muted` | `#6b7280` | secondary text: header subtitle, notes, typing cursor |
+| `data-border` | `#e5e7eb` | divider lines, input/chip borders |
+| `data-user-bg` | `#2563eb` | the visitor's chat bubbles |
+| `data-user-fg` | `#ffffff` | the visitor's bubble text |
+
+Notes:
+
+- Attributes are optional and independent. A single `data-accent` re-brands the stock
+  light panel; `data-bg` + `data-fg` + `data-muted` + `data-border` give a dark panel.
+- Bot bubbles, chips and code tints derive from `bg`/`fg`, so dark themes come out
+  coherent without extra attributes (very old browsers without `color-mix` fall back to
+  the stock light surfaces).
+- Refusal (amber) and error (red) bubbles keep fixed status colors that stay readable on
+  any panel.
+- The floating launcher button keeps its neutral dark style (not themed).
+- The standalone `/chat` page always uses the defaults — there is no parent script tag to
+  read attributes from.
 
 ## Citation protocols (config `chat.protocol`)
 
