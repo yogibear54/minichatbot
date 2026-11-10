@@ -1,0 +1,51 @@
+# Lotus Creations — per-site installation (one installation = one site, PLAN §12).
+# Keys/secrets are NEVER stored here — they come from environment variables
+# (export OPENROUTER_API_KEY before running). Unset keys inherit the code defaults
+# in core/config.py (guard = Llama Guard 4 via OpenRouter, same key).
+
+site:
+  name: "Lotus Creations"
+  start_url: "http://localhost:8081/"
+  max_pages: 40
+  include_subdomains: false
+  crawl_fallback: true
+  render_js: true              # lotus-creations injects content client-side (GSAP) —
+                               # render pages in headless Chromium before extraction
+  map_sitemap_host: true       # sitemap lists production URLs (lotus-creations.com) —
+                               # rewrite them to localhost:8081 for this local crawl
+  exclude_paths: []
+  dedup_boilerplate: true
+  boilerplate_threshold: 0.3   # lotus work pages share heading-only sections:
+                               # removes 20 occurrences at 30% (default 0.6 removes none)            # search/genindex/_modules always excluded; add more if needed
+  suggestions:                 # tappable chips shown in the chat widget
+    - "What services do you offer?"
+    - "How can we work together?"
+    - "What projects have you built?"
+
+# Chat (OpenRouter) — shown explicitly so this installation is self-documenting.
+chat:
+  base_url: "https://openrouter.ai/api/v1"
+  api_key_env: "OPENROUTER_API_KEY"
+  # A/B result (scripts/validate_model.py): llama-3.1-8b beats gpt-oss-20b on
+  # citation compliance for this site — revisit with the eval set.
+  # meta-llama/llama-3.1-8b-instruct
+  # inclusionai/ling-3.0-tiny
+  model: "meta-llama/llama-3.1-8b-instruct"
+  context_window: 131072       # offline FALLBACK only — at ingest/serve this is
+                               # auto-synced from the provider (llama-3.1-8b: 131,072;
+                               # e.g. mistral-small would adopt 256,000 automatically)
+  max_output: 10000              # long quote-heavy answers need room before the CITATIONS block
+  temperature: 0.2
+  # Citation protocol:
+  #   trailer    = prose + trailing CITATIONS block — any instruct model.
+  #                Measured on this site: 5/5 grounded citations (PASS).
+  #   structured = json_schema-enforced {answer, citations[]} — needs real upstream
+  #                enforcement. Measured alternative: mistralai/mistral-small-3.2-24b-instruct,
+  #                3/5 grounded (PASS). Avoid gpt-oss-20b here: 0/5, invalid JSON, 16s TTFT.
+  protocol: "trailer"
+  extra_headers:               # OpenRouter app attribution (optional but recommended)
+    HTTP-Referer: "http://localhost:8010"
+    X-Title: "Lotus Creations Chatbot"
+
+# Guard inherits the code defaults (Llama Guard 4 via OpenRouter, same key).
+# To pin a different host/model, add a guard: block — see config.example.yaml.

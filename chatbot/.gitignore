@@ -5,3 +5,4 @@ data/
 sessions.db
 .pytest_cache/
 config.yaml
+!lotus/config.yaml
