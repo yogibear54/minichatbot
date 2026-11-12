@@ -7,4 +7,5 @@ sessions.db
 config.yaml
 !lotus/config.yaml
 !lotus/config.docker.yaml
+!site/config.yaml
 .env

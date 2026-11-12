@@ -1,0 +1,66 @@
+# Lotus Creations — PRODUCTION installation (deployed on the production server,
+# served by docker-compose.yml + Caddyfile). One installation = one site (PLAN §12);
+# data_dir is derived from this folder, so production stays fully separate from the
+# local dev profiles (lotus/config.yaml + lotus/config.docker.yaml).
+#
+# Keys/secrets are NEVER stored here — they live in the server's .env
+# (OPENROUTER_API_KEY, ADMIN_TOKEN). Unset keys inherit the code defaults
+# in core/config.py (guard = Llama Guard 4 via OpenRouter, same key).
+#
+# Host layout (measured live):
+#   https://lotus-creations.com/        apex — 301s to www (canonical serving host)
+#   https://www.lotus-creations.com/    www  — serves the site + /sitemap.xml
+#   sitemap <loc> entries list the APEX host — map_sitemap_host rewrites them to
+#   start_url's host so pages key consistently under www (no refresh churn).
+
+site:
+  name: "Lotus Creations"
+  start_url: "https://www.lotus-creations.com/"
+  # public_base_url: unset — crawl origin == public origin on the production server.
+  max_pages: 40
+  include_subdomains: false
+  crawl_fallback: true
+  render_js: true              # lotus-creations injects content client-side (GSAP) —
+                               # render pages in headless Chromium before extraction
+  map_sitemap_host: true       # sitemap <loc> lists apex URLs; rewrite to www (see header)
+  exclude_paths: []
+  dedup_boilerplate: true
+  boilerplate_threshold: 0.3   # lotus work pages share heading-only sections:
+                               # removes 20 occurrences at 30% (default 0.6 removes none)
+  suggestions:                 # tappable chips shown in the chat widget
+    - "What services do you offer?"
+    - "How can we work together?"
+    - "What projects have you built?"
+
+# Chat (OpenRouter) — shown explicitly so this installation is self-documenting.
+chat:
+  base_url: "https://openrouter.ai/api/v1"
+  api_key_env: "OPENROUTER_API_KEY"
+  # A/B result (scripts/validate_model.py): llama-3.1-8b beats gpt-oss-20b on
+  # citation compliance for this site — revisit with the eval set.
+  model: "meta-llama/llama-3.1-8b-instruct"
+  context_window: 131072       # offline FALLBACK only — at ingest/serve this is
+                               # auto-synced from the provider (llama-3.1-8b: 131,072;
+                               # e.g. mistral-small would adopt 256,000 automatically)
+  max_output: 10000            # long quote-heavy answers need room before the CITATIONS block
+  temperature: 0.2
+  # Citation protocol:
+  #   trailer    = prose + trailing CITATIONS block — any instruct model.
+  #                Measured on this site: 5/5 grounded citations (PASS).
+  #   structured = json_schema-enforced {answer, citations[]} — needs real upstream
+  #                enforcement. Measured alternative: mistralai/mistral-small-3.2-24b-instruct,
+  #                3/5 grounded (PASS). Avoid gpt-oss-20b here: 0/5, invalid JSON, 16s TTFT.
+  protocol: "trailer"
+  max_answer_words: 220        # default 100 ("brief") — answers felt too short
+  answer_guidance: >-          # extra style rules appended to the system prompt
+    Write in first person as the site owner ("I built...", "I offer..."), addressing
+    the visitor as "you". Be technically credible: name the concrete technologies,
+    tools, numbers and outcomes found in the site content. Be concise but specific —
+    lead with the direct answer, add exactly as much detail as the question needs,
+    and use a short bullet list when enumerating multiple items.
+  extra_headers:               # OpenRouter app attribution (optional but recommended)
+    HTTP-Referer: "https://www.lotus-creations.com"
+    X-Title: "Lotus Creations Chatbot"
+
+# Guard inherits the code defaults (Llama Guard 4 via OpenRouter, same key).
+# To pin a different host/model, add a guard: block — see config.example.yaml.
