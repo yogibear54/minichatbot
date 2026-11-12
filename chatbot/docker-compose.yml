@@ -34,6 +34,11 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    profiles:
+      - production   # opt-in: plain `docker compose up -d` runs the bot only.
+                     # Servers where nginx already owns 80/443 (the common case)
+                     # never start Caddy; start it explicitly with:
+                     #   docker compose --profile production up -d
     ports:
       - "80:80"
       - "443:443"
