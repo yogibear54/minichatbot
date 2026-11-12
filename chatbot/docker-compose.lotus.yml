@@ -1,0 +1,39 @@
+# Option A — run the LOTUS bundle (chatbot/lotus/) in Docker on port 8010.
+#
+#   docker compose -f docker-compose.lotus.yml up -d --build
+#
+# Notes:
+#   - Separate compose project ("chatbot-lotus") so it can replace/flip with the
+#     base stack cleanly:
+#       stop the base stack first if it holds port 8010:  docker compose down
+#       flip back to the site bundle later:               docker compose -f docker-compose.lotus.yml down
+#                                                         && docker compose up -d --build
+#   - No Caddy: local testing only (http://localhost:8010). Production uses
+#     docker-compose.yml + Caddyfile on the server.
+#   - Content syncs CAN run in the container now:
+#       docker compose -f docker-compose.lotus.yml exec bot python cli.py \
+#         ingest --config /app/lotus/config.docker.yaml
+#     (host.docker.internal reaches the host-run site; citations still point at
+#     localhost:8081 via public_base_url). Host-side syncs keep using config.yaml.
+#
+# Secrets come from .env in this folder (OPENROUTER_API_KEY, ADMIN_TOKEN).
+
+name: chatbot-lotus
+
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      CONFIG_PATH: /app/lotus/config.docker.yaml  # crawl via host.docker.internal; see lotus/config.docker.yaml
+      PORT: "8000"
+      CHROMIUM_NO_SANDBOX: "1"     # chromium runs unprivileged here (render_js)
+    user: "1000:1000"              # match the host user -> lotus/data ownership stays yours
+    volumes:
+      - ./lotus:/app/lotus         # config.yaml + data/ (bundle, manifest, sessions.db)
+    ports:
+      - "127.0.0.1:8010:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

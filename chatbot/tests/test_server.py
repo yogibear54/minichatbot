@@ -76,6 +76,43 @@ def test_info_and_assets(app_and_client):
     assert "CBTheme" in client.get("/theme.js").text
 
 
+def test_api_refresh_hot_reloads_bundle(tmp_path, fixture_site, monkeypatch):
+    """Regression: reload_knowledge referenced an undefined variable, so /api/refresh
+    500'd after writing the bundle — the server kept the stale in-memory state."""
+    import tests.helpers as helpers
+    from core.pipeline import full_ingest
+    from tests.helpers import PAGES, make_config
+
+    monkeypatch.setenv("ADMIN_TOKEN", "tok")
+    cfg = make_config(tmp_path, fixture_site)
+    cfg.guard.enabled = False
+    monkeypatch.setattr("server.main.OpenAICompatClient", StubLLM)
+    full_ingest(cfg)
+    client = TestClient(create_app(cfg))
+
+    old_sitemap = helpers.SITEMAP
+    helpers.SITEMAP = old_sitemap.replace(
+        "</urlset>",
+        f"  <url><loc>{fixture_site}/docs/api</loc><lastmod>2026-02-01</lastmod></url>\n</urlset>")
+    PAGES["/docs/api"] = ("<html><head><title>API Docs</title></head><body>"
+                          "<h1>API Docs</h1><p>The REST API accepts JSON payloads at "
+                          "https://api.example.com/v1 and returns a sync identifier for every "
+                          "request. Webhook events are delivered within a few minutes when a "
+                          "sync completes. Retries use exponential backoff for up to one hour. "
+                          "All endpoints require a bearer token issued in the dashboard.</p>"
+                          "</body></html>")
+    try:
+        res = client.post("/api/refresh", headers={"Authorization": "Bearer tok"})
+    finally:
+        helpers.SITEMAP = old_sitemap
+        PAGES.pop("/docs/api", None)
+
+    assert res.status_code == 200          # was: 500 (NameError in reload_knowledge)
+    body = res.json()
+    assert body["applied"] is True
+    assert f"+ {fixture_site}/docs/api" in body["changed"]
+
+
 def test_invalid_message_rejected(app_and_client):
     client, _ = app_and_client
     assert client.post("/api/chat", json={"message": ""}).status_code == 400

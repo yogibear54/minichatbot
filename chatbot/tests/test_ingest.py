@@ -1,5 +1,6 @@
-from core.pipeline import full_ingest
-from tests.helpers import make_config
+from core.pipeline import full_ingest, refresh_site
+from tests.helpers import PAGES, make_config
+import tests.helpers as helpers
 
 
 def test_full_ingest_fixture(tmp_path, fixture_site):
@@ -14,6 +15,41 @@ def test_full_ingest_fixture(tmp_path, fixture_site):
     assert f"[src: {fixture_site}/docs/export#csv-export]" in corpus
     # page files exist and slugs are recorded
     assert any(p["file"] == "docs-export.md" for p in manifest["pages"])
+
+
+def test_refresh_adds_new_page_exactly_once(tmp_path, fixture_site):
+    """Regression: refresh appended new pages to the manifest twice (duplicate
+    corpus entries + double token counts)."""
+    from core import corpus
+
+    cfg = make_config(tmp_path, fixture_site)
+    manifest = full_ingest(cfg)
+    assert all(p["url"] != f"{fixture_site}/docs/api" for p in manifest["pages"])
+
+    # the site publishes a new page (linked from the sitemap)
+    old_sitemap = helpers.SITEMAP
+    helpers.SITEMAP = old_sitemap.replace(
+        "</urlset>",
+        f"  <url><loc>{fixture_site}/docs/api</loc><lastmod>2026-02-01</lastmod></url>\n</urlset>")
+    PAGES["/docs/api"] = ("<html><head><title>API Docs</title></head><body>"
+                          "<h1>API Docs</h1><p>The REST API accepts JSON payloads at "
+                          "https://api.example.com/v1 and returns a sync identifier for every "
+                          "request. Webhook events are delivered within a few minutes when a "
+                          "sync completes. Retries use exponential backoff for up to one hour. "
+                          "All endpoints require a bearer token issued in the dashboard.</p>"
+                          "</body></html>")
+    try:
+        summary = refresh_site(cfg)
+    finally:
+        helpers.SITEMAP = old_sitemap
+        PAGES.pop("/docs/api", None)
+
+    assert f"+ {fixture_site}/docs/api" in summary["changed"]
+    m2 = corpus.load_manifest(cfg.data_dir)
+    urls = [p["url"] for p in m2["pages"]]
+    assert urls.count(f"{fixture_site}/docs/api") == 1
+    body = (tmp_path / "data" / "site" / "corpus.md").read_text()
+    assert body.count(f"[src: {fixture_site}/docs/api]") == 1
 
 
 def test_first_party_md_dedup_and_normalization(tmp_path, fixture_site):

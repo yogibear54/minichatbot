@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 
@@ -13,7 +14,13 @@ _HISTORY_RESERVE = 3000
 @lru_cache(maxsize=1)
 def _encoding():
     cache_dir = Path(__file__).resolve().parent.parent / "data" / ".token_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Read-only install (e.g. root-owned /app in Docker when running as a
+        # non-root user) — cache the BPE download in the system temp dir instead.
+        cache_dir = Path(tempfile.gettempdir()) / "site-chatbot-token-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(cache_dir))
     import tiktoken
 

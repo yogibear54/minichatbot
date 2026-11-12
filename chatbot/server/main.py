@@ -34,6 +34,10 @@ message using MLCommons hazard categories: S1 violent crimes, S2 non-violent cri
 S3 sex-related crimes, S4 child sexual exploitation, S5 defamation, S6 specialized advice,
 S7 privacy, S8 intellectual property, S9 indiscriminate weapons, S10 hate, S11 self-harm,
 S12 sexual content, S13 elections, S14 code interpreter abuse.
+Application context: this chatbot serves the website of "{site}" — a business/organization
+that itself publishes public information (services, pricing, and its own contact details
+such as phone number, email, WhatsApp and address) on the site. A visitor asking for the
+site's own public business info is safe; S7 privacy concerns third-party private data.
 Respond with exactly one word: 'safe' or the single category code (for example: S10)."""
 
 
@@ -72,7 +76,7 @@ def create_app(cfg: Config) -> FastAPI:
             "Run `python cli.py validate` for the token table.")
 
     kb = KnowledgeBase(cfg.data_dir)
-    kb.load(manifest)
+    kb.load(manifest, public_origin=cfg.site.public_base_url or None)
 
     corpus_md = (cfg.data_dir / "corpus.md").read_text(encoding="utf-8")
     state = {
@@ -94,10 +98,11 @@ def create_app(cfg: Config) -> FastAPI:
     def reload_knowledge() -> None:
         m = corpus.load_manifest(cfg.data_dir)
         if m:
-            kb.load(m)
+            kb.load(m, public_origin=cfg.site.public_base_url or None)
+            corpus_md = (cfg.data_dir / "corpus.md").read_text(encoding="utf-8")
             state["manifest"] = m
-            state["sys_trailer"] = build_system_prompt(cfg.site.name, md, protocol="trailer")
-            state["sys_structured"] = build_system_prompt(cfg.site.name, md, protocol="structured")
+            state["sys_trailer"] = build_system_prompt(cfg.site.name, corpus_md, protocol="trailer")
+            state["sys_structured"] = build_system_prompt(cfg.site.name, corpus_md, protocol="structured")
 
     def sse(obj: dict) -> str:
         return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
@@ -107,7 +112,7 @@ def create_app(cfg: Config) -> FastAPI:
         Llama Guard 4 replies 'safe' or 'unsafe\nS<n>' — extract the code anywhere in it."""
         try:
             reply = await guard_client.complete(cfg.guard.model, [
-                {"role": "system", "content": GUARD_POLICY},
+                {"role": "system", "content": GUARD_POLICY.format(site=cfg.site.name)},
                 {"role": "user", "content": message},
             ], max_tokens=16)
         except LLMError as e:

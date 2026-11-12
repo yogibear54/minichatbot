@@ -6,3 +6,5 @@ sessions.db
 .pytest_cache/
 config.yaml
 !lotus/config.yaml
+!lotus/config.docker.yaml
+.env

@@ -1,0 +1,49 @@
+# Production stack: chatbot API + Caddy reverse proxy (automatic HTTPS).
+#
+#   1. cp .env.example .env            # and fill in the keys
+#   2. mkdir -p site && cp config.example.yaml site/config.yaml   # edit for your site
+#   3. docker compose up -d --build
+#   4. first ingest (inside the container):
+#        docker compose exec bot python cli.py ingest --config /app/site/config.yaml
+#   5. embed:  <script src="https://chat.example.com/widget.js"
+#                   data-endpoint="https://chat.example.com" defer></script>
+#
+# Scheduled sync (host crontab), e.g. hourly:
+#   0 * * * * cd /path/to/chatbot && docker compose exec -T bot python cli.py refresh --config /app/site/config.yaml
+
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      CONFIG_PATH: /app/site/config.yaml
+      PORT: "8000"
+    volumes:
+      - ./site:/app/site          # config.yaml + data/ (bundle, sessions.db, logs)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets start_url point at the HOST
+                                              # (http://host.docker.internal:8081)
+    # Published only on localhost — Caddy terminates TLS and proxies public traffic.
+    # Remove the 127.0.0.1 prefix ONLY if you run without the caddy service.
+    ports:
+      - "127.0.0.1:8010:8000"
+    depends_on: []
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bot
+
+volumes:
+  caddy_data:
+  caddy_config:

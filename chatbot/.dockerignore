@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+lotus/data/
+sessions.db
+tests/
+.env
+.git/
+*.md
+Caddyfile
+docker-compose.yml

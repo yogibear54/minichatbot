@@ -22,6 +22,8 @@ class SiteConfig:
     suggestions: list = field(default_factory=list)  # fallback suggested questions (widget)
     dynamic_suggestions: bool = True  # generate per-page questions with the LLM at ingest
     exclude_paths: list = field(default_factory=list)  # path substrings to skip
+    public_base_url: str = ""      # public origin cited to VISITORS when the crawl runs
+                                   # from a different host (container/staging). Empty = same.
     dedup_boilerplate: bool = True   # drop text sections repeated on >=threshold of pages
     boilerplate_threshold: float = 0.6  # fraction of pages a section must appear on to count as boilerplate
 

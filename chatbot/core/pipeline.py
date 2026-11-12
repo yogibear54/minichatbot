@@ -263,9 +263,6 @@ def refresh_site(cfg: Config) -> dict:
                     corpus.write_page_file(data_dir / "pages", entry, page.markdown)
                     manifest["pages"].append(entry)
                     changed.append(f"+ {url}")
-                    corpus.write_page_file(data_dir / "pages", entry, page.markdown)
-                    manifest["pages"].append(entry)
-                    changed.append(f"+ {url}")
             for url, existing in by_url.items():
                 page, status = ingest.fetch_and_extract(
                     client, url, etag=existing.get("etag"), last_modified=existing.get("last_modified"),

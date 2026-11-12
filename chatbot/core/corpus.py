@@ -8,6 +8,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from .config import Config
 from .ingest import FetchedPage
@@ -137,10 +138,20 @@ def _strip_boilerplate(frags: list[tuple[dict, str]],
 def build_corpus(data_dir: Path, manifest: dict, cfg: Config) -> None:
     """Assemble corpus.md (annotated bundle sent to the model), recount tokens, refresh verdict."""
     pages_dir = data_dir / "pages"
+    pub = cfg.site.public_base_url.strip()
+    pub_split = urlsplit(pub) if pub else None
+
+    def to_public(u: str) -> str:
+        if not pub_split:
+            return u
+        p = urlsplit(u)
+        return urlunsplit((pub_split.scheme or p.scheme, pub_split.netloc or p.netloc,
+                           p.path, p.query, ""))
+
     frags: list[tuple[dict, str]] = []
     for entry in sorted(manifest["pages"], key=lambda p: p["url"]):
         md = (pages_dir / entry["file"]).read_text(encoding="utf-8")
-        frags.append((entry, annotate_page(entry["url"], entry["title"], md)))
+        frags.append((entry, annotate_page(to_public(entry["url"]), entry["title"], md)))
 
     removed = 0
     if cfg.site.dedup_boilerplate and len(frags) >= 4:
@@ -148,7 +159,7 @@ def build_corpus(data_dir: Path, manifest: dict, cfg: Config) -> None:
     manifest["boilerplate_sections_removed"] = removed
 
     parts: list[str] = [
-        f"SITE CONTENT for {manifest['site_name']} ({manifest['site_url']}).",
+        f"SITE CONTENT for {manifest['site_name']} ({to_public(manifest['site_url'])}).",
         "Each section is prefixed with [src: url#anchor] — cite these as the location.",
         "",
     ]

@@ -101,7 +101,10 @@ Troubleshooting:
 - Guard silent → it fails open when its host is unreachable; look for `[guard]` log lines.
 - Chat panel blank on the site → bot server not running on the port in the script tag.
 - Production deploy: replace `localhost` URLs in `start_url` + the embed snippet, and drop
-  `map_sitemap_host` (the production sitemap host then matches `start_url`).
+  `map_sitemap_host` (the production sitemap host then matches `start_url`). If the crawler
+  runs somewhere the public domain isn't reachable (container crawling a host-run site,
+  staging crawling a preview domain), set `site.public_base_url` — see "Ingest/refresh"
+  below.
 
 ## Run
 
@@ -115,12 +118,44 @@ Troubleshooting:
 Embed on any page of the site:
 
 ```html
-<script src="http://localhost:8000/widget.js" data-endpoint="http://localhost:8000" defer></script>
+<script src="http://localhost:8010/widget.js" data-endpoint="http://localhost:8010" defer></script>
 ```
 
 Optional color attributes on that tag restyle the chat panel — see [Theming](#theming).
 
-Standalone chat UI: `http://localhost:8000/chat`.
+Standalone chat UI: `http://localhost:8010/chat`.
+
+### Ingest/refresh: where you run it decides the config
+
+Two things are tied to the config file:
+
+- **Bundle location**: `data_dir` is derived from the config file's own folder
+  (`<site>/data/site`), so any config in the same folder reads/writes one shared bundle.
+- **Crawl origin** (`site.start_url`): inside Docker, `localhost` is the *container*,
+  not the host machine — crawling `http://localhost:8081/` from the container finds
+  nothing ("No pages discovered"). The container must use `host.docker.internal`
+  (mapped to the host by `extra_hosts` in the compose files).
+
+Pair the config with where the command runs:
+
+| Command runs on | Config | `start_url` (crawl origin) |
+|---|---|---|
+| host venv | `<site>/config.yaml` | `http://localhost:8081/` (or the real domain) |
+| container (`… exec bot …`) | `<site>/config.docker.yaml` | `http://host.docker.internal:8081/` |
+
+Rules:
+
+- Use the matching config for where the command runs. The wrong pairing fails at
+  discovery (container hitting its own localhost) or DNS (host can't resolve
+  `host.docker.internal` — it only exists inside Docker).
+- Keep the two configs otherwise identical; the docker variant differs only in
+  `start_url` + `public_base_url`. `data_dir` comes from the folder, so both write
+  the same bundle.
+- `site.public_base_url` decouples the **public origin** shown to visitors from the
+  crawl origin: when set, citation chips and "Show me" links use it (the manifest keys
+  stay keyed by crawl URL; grounding resolves visitor URLs across both origins).
+- Serving works offline of the site — only ingest/refresh need to reach it, and an
+  ingest from either side is picked up by a running server without restart.
 
 ## Theming
 
@@ -132,7 +167,7 @@ allowlist validation (`widget/theme.js`): each value must be a plain color — h
 corresponding default stays.
 
 ```html
-<script src="http://localhost:8000/widget.js" data-endpoint="http://localhost:8000"
+<script src="http://localhost:8010/widget.js" data-endpoint="http://localhost:8010"
         data-accent="#7c3aed" data-accent-weak="#f3e8ff"
         data-bg="#141414" data-fg="#f5f5f5"
         data-muted="#a3a3a3" data-border="#333"
@@ -219,13 +254,17 @@ prompt sizes to calibrate these thresholds and pick the chat model.
 ## Response protocol (SSE)
 
 `meta → token* → citations? → done` (or `refusal` / `error`).
-Citations: `{url, anchor, quote, label[, rescued]}` — `url` is always a manifest URL.
+Citations: `{url, anchor, quote, label[, rescued]}` — `url` is always a manifest URL,
+rewritten to `site.public_base_url` when that is set (so chips stay clickable for
+visitors even when the crawler ran from a different origin).
 
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests -q     # 16 tests: slugs/annotate, verdicts, citations,
-                                        # rescue, sessions/rate-limit, fixture ingest, live SSE e2e
+.venv/bin/python -m pytest tests -q     # 61 tests: slugs/annotate, extraction/quality gate,
+                                        # verdicts, citations/grounding, stream parsing, tokens,
+                                        # modelinfo, sessions/rate-limit, fixture ingest, live SSE e2e,
+                                        # md.js rendering (node)
 ```
 
 ## Known limitations (v1, by design)
@@ -239,3 +278,74 @@ Citations: `{url, anchor, quote, label[, rescued]}` — `url` is always a manife
   open with a log line.
 - Multilingual sites: ingest everything into one bundle for now; per-language bundles are
   the planned remedy when a site needs it (PLAN §9.2).
+
+
+## Production deployment (Docker)
+
+Docker is the recommended way to run this in production: the Chromium dependency for
+`render_js` is pinned in the image, secrets flow through environment variables, and
+Caddy terminates TLS (required — an `http://` widget on an `https://` site is blocked
+by browsers as mixed content).
+
+```bash
+cp .env.example .env                 # fill OPENROUTER_API_KEY (+ ADMIN_TOKEN)
+mkdir -p site && cp config.example.yaml site/config.yaml   # edit for your site
+docker compose up -d --build
+docker compose exec bot python cli.py ingest --config /app/site/config.yaml
+```
+
+If the crawled site runs on the *host* machine (not in this compose project), the
+container must crawl it via `host.docker.internal:<port>` — use a docker-variant config
+for that case (see "Ingest/refresh" above); `public_base_url` then keeps visitor-facing
+citation URLs on the site's normal origin.
+
+Layout and operations:
+- `./site/` (mounted at `/app/site`) holds `config.yaml` + `data/` (bundle, manifest,
+  `sessions.db`, logs). **Back this folder up** — it is the entire state of the bot.
+- Public traffic: Caddy reverse-proxies `https://chat.example.com` → `bot:8000` with
+  automatic TLS (edit `Caddyfile` + DNS). The API port is published on localhost only.
+- Sync: prefer `POST /api/refresh` with `Authorization: Bearer $ADMIN_TOKEN` — it runs
+  the refresh inside the serving process and hot-reloads the bundle, keeping the last
+  good bundle in memory if the new verdict is FAIL (no restart needed; cron and
+  deploy-webhook friendly). A CLI `refresh` (host venv or `docker compose exec`)
+  updates the on-disk bundle only — a running server sees it on next restart, or on
+  the next `/api/refresh` call.
+- Crawl vs public origin: on a production server crawling the live domain, crawl origin
+  and public origin are equal and `public_base_url` can stay unset. Set it only when the
+  crawler runs from a different network position than visitors (see "Ingest/refresh").
+- Health: `GET /api/health` + container `HEALTHCHECK`.
+- Upgrades: `git pull && docker compose up -d --build` — bundle data survives (volume).
+- Without Docker: `pip install -r requirements.txt && playwright install chromium`,
+  run `cli.py serve` under systemd behind nginx/Caddy — the container simply packages
+  the same steps.
+
+Scaling notes: a single uvicorn process is the intended operating point (SQLite-backed
+sessions/rate-limits are per-process). For multiple instances, move sessions to a shared
+store first. Chromium needs ~1 GB RAM under `render_js`; size the host accordingly.
+
+### Local bundles in Docker (`docker-compose.lotus.yml`)
+
+To test a per-site bundle (e.g. `lotus/`) in the container instead of the `site/`
+production layout:
+
+```bash
+docker compose down                                    # free port 8010 if the base stack holds it
+docker compose -f docker-compose.lotus.yml up -d --build
+docker compose -f docker-compose.lotus.yml exec bot python cli.py ingest \
+    --config /app/lotus/config.docker.yaml
+```
+
+- It is a **separate compose project** (`name: chatbot-lotus`) — flipping bundles on
+  port 8010 is explicit: the base stack (`docker compose down`) and the lotus stack
+  (`docker compose -f docker-compose.lotus.yml down`) are stopped independently.
+- It runs the bot only — no Caddy. TLS is a production concern; dev machines usually
+  already have something on ports 80/443 (which is exactly the conflict Caddy would hit).
+- The lotus stack runs as the host user (`user: "1000:1000"`) so container-written files
+  in `lotus/data/` stay owned by you, with `CHROMIUM_NO_SANDBOX=1` for `render_js`.
+- Container-side syncs use `<site>/config.docker.yaml` (`host.docker.internal` crawl
+  origin); host-side syncs keep using `<site>/config.yaml`. Both write the same bundle.
+  A CLI refresh doesn't hot-reload the serving process — restart the container
+  (`docker compose -f docker-compose.lotus.yml restart bot`) or `POST /api/refresh`
+  with the admin token to apply it live.
+- To compare two bundles side by side instead of flipping ports, duplicate the service
+  with a different name + port (e.g. `bot-lotus` on `127.0.0.1:8011`).

@@ -1,0 +1,5 @@
+# Replace chat.example.com with your public hostname (must point at this server).
+# Caddy obtains and renews the TLS certificate automatically.
+chat.example.com {
+	reverse_proxy bot:8000
+}

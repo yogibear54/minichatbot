@@ -4,6 +4,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
+from urllib.parse import urlsplit, urlunsplit
 from typing import Callable
 
 from core.markdown_utils import (
@@ -78,9 +79,13 @@ class KnowledgeBase:
 
     def __init__(self, data_dir):
         self.data_dir = data_dir
-        self.pages: dict[str, dict] = {}  # canonical url -> {title, md_normalized, anchors}
+        self.public_origin = None
+        self.crawl_origin = None
+        self.pages: dict[str, dict] = {}  # crawl url -> {title, public_url, md, anchors}
 
-    def load(self, manifest: dict) -> None:
+    def load(self, manifest: dict, public_origin: str | None = None) -> None:
+        self.public_origin = urlsplit(public_origin) if public_origin else None
+        self.crawl_origin = None
         self.pages.clear()
         pages_dir = self.data_dir / "pages"
         for entry in manifest["pages"]:
@@ -89,8 +94,18 @@ class KnowledgeBase:
                 md = f.read_text(encoding="utf-8")
             except OSError:
                 continue
+            crawl_p = urlsplit(entry["url"])
+            if self.crawl_origin is None:
+                self.crawl_origin = crawl_p
+            if self.public_origin:
+                public = urlunsplit((self.public_origin.scheme or crawl_p.scheme,
+                                     self.public_origin.netloc or crawl_p.netloc,
+                                     crawl_p.path, crawl_p.query, ""))
+            else:
+                public = entry["url"]
             self.pages[entry["url"]] = {
                 "title": entry["title"],
+                "public_url": public,
                 "suggestions": entry.get("suggestions", []),
                 "md_raw": md,
                 "md_normalized": normalize_ws(md),
@@ -103,9 +118,8 @@ class KnowledgeBase:
         return self.pages.get(url)
 
     def resolve(self, url: str) -> str | None:
-        """Map a visitor's current URL (with fragment, trailing slash variants) to a
-        manifest page URL; None if unknown."""
-        from core.markdown_utils import normalize_ws
+        """Map a visitor's current URL (public origin, fragment, trailing slash
+        variants) to a manifest page URL; None if unknown."""
         from urllib.parse import urlsplit, urlunsplit
 
         def variants(u):
@@ -113,6 +127,10 @@ class KnowledgeBase:
             base = urlunsplit((p.scheme, p.netloc, p.path or "/", "", ""))
             for cand in (base, base.rstrip("/"), base + "/"):
                 yield cand
+                if self.public_origin and self.crawl_origin:
+                    # visitor URLs use the public origin; the bundle keys by crawl origin
+                    yield urlunsplit((self.crawl_origin.scheme, self.crawl_origin.netloc,
+                                      p.path or "/", "", ""))
 
         for cand in variants(url):
             if cand in self.pages:
@@ -160,8 +178,9 @@ def ground_citations(candidates: list[dict], kb: KnowledgeBase, limit: int = 3) 
                 quote = ""
 
         label = heading_text or str(c.get("label") or page["title"])
+        public_base = page.get("public_url", url)
         grounded.append({
-            "url": url + (f"#{anchor}" if anchor else ""),
+            "url": public_base + (f"#{anchor}" if anchor else ""),
             "anchor": anchor,
             "quote": quote,
             "label": str(label),
@@ -270,9 +289,9 @@ def rescue_citations(question: str, kb: KnowledgeBase, limit: int = 1,
                 score += 10     # strong boost: questions on a page are usually about it
             scored.append((score, url, page))
     scored.sort(reverse=True, key=lambda s: (round(s[0], 6), s[2]["title"]))
-    return [{"url": url, "anchor": "", "quote": "", "label": page["title"],
-             "rescued": True}
-            for _ov, url, page in scored[:limit]]
+    return [{"url": page.get("public_url", url), "anchor": "", "quote": "",
+             "label": page["title"], "rescued": True}
+            for _score, url, page in scored[:limit]]
 
 
 def refusal_finish(display_text: str, had_valid_citations: bool,

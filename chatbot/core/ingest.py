@@ -244,8 +244,8 @@ def _dom_text_len(page_html: str) -> int:
         return 0
 
 
-_CHROME_XPATH = (".//script|.//style|.//noscript|.//nav|.//header|.//footer|.//aside|"
-                 ".//form|.//button|.//*[@aria-hidden='true']|.//*[@hidden]")
+_CHROME_XPATH = (".//script|.//style|.//noscript|.//nav|.//header|.//footer|"
+                 ".//form|.//button|.//*[@aria-hidden='true']|.//*[@hidden]")  # NB: aside kept — sidebars often hold real content
 
 
 def _fallback_markdown(page_html: str) -> str | None:
@@ -419,7 +419,14 @@ class JsRenderer:
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
-        self.browser = self._pw.chromium.launch(headless=True)
+        # containers run as root and share a small /dev/shm — Chromium's sandbox and
+        # shared-memory device break in that environment (standard Playwright-in-Docker
+        # pattern), so both flags are applied when root or explicitly requested.
+        launch_args = []
+        import os as _os
+        if _os.name == "posix" and (_os.geteuid() == 0 or _os.environ.get("CHROMIUM_NO_SANDBOX")):
+            launch_args += ["--no-sandbox", "--disable-dev-shm-usage"]
+        self.browser = self._pw.chromium.launch(headless=True, args=launch_args)
         self.page = self.browser.new_page(user_agent=USER_AGENT)
         self.timeout_ms = timeout_ms
 
@@ -445,7 +452,8 @@ class JsRenderer:
     def visible_html(self, url: str) -> str | None:
         """Rendered page reduced to its VISIBLE body content: chrome (nav/header/footer/
         forms/buttons/dialogs) and computed-invisible elements (display:none, opacity:0 —
-        GSAP pre-animation states, closed modals) are removed. Extraction then sees
+        GSAP pre-animation states, closed modals) are removed. <aside> is kept: sidebars
+        often carry real page content (contact cards, related info). Extraction then sees
         exactly what a visitor sees, and the DOM-text quality gate in extract_markdown
         gets an accurate reference."""
         try:
@@ -453,11 +461,29 @@ class JsRenderer:
                 self.page.goto(url, wait_until="networkidle", timeout=self.timeout_ms)
             except Exception:
                 pass
+            # Reveal scroll-triggered content (GSAP ScrollTrigger / IntersectionObserver):
+            # walk down the page so pre-animation opacity:0 states flip to visible
+            # BEFORE the strip pass — otherwise below-the-fold cards (e.g. contact
+            # info) are dropped as invisible and never reach the corpus.
+            try:
+                self.page.evaluate("""async () => {
+                  const step = window.innerHeight * 0.7;
+                  for (let i = 0, y = 0;
+                       i < 40 && y < document.body.scrollHeight;
+                       i++, y += step) {
+                    window.scrollTo(0, y);
+                    await new Promise(r => setTimeout(r, 60));
+                  }
+                  window.scrollTo(0, 0);
+                  await new Promise(r => setTimeout(r, 150));
+                }""")
+            except Exception:
+                pass
             for _ in range(4):
                 try:
                     self.page.evaluate("""() => {
                       const doomed = [];
-                      document.body.querySelectorAll('script,style,noscript,nav,header,footer,aside,form,button,[aria-hidden="true"],[role="dialog"],dialog,.modal,[hidden]').forEach(e => doomed.push(e));
+                      document.body.querySelectorAll('script,style,noscript,nav,header,footer,form,button,[aria-hidden="true"],[role="dialog"],dialog,.modal,[hidden]').forEach(e => doomed.push(e));
                       document.body.querySelectorAll('*').forEach(e => {
                         const s = getComputedStyle(e);
                         if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) doomed.push(e);
