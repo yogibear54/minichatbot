@@ -8,7 +8,8 @@ _APACHE_NOTE = (
 
 # json_schema for the structured protocol (chat.protocol = "structured").
 # "answer" is the FIRST property so the streaming parser can display it incrementally.
-CITATION_SCHEMA = {
+def citation_schema(max_words: int = 100) -> dict:
+    return {
     "type": "json_schema",
     "json_schema": {
         "name": "site_answer",
@@ -18,7 +19,7 @@ CITATION_SCHEMA = {
             "properties": {
                 "answer": {
                     "type": "string",
-                    "description": "The helpful answer, at most ~100 words",
+                    "description": f"The helpful answer, at most ~{max_words} words",
                 },
                 "citations": {
                     "type": "array",
@@ -52,12 +53,16 @@ CITATION_SCHEMA = {
             "additionalProperties": False,
         },
     },
-}
+    }
 
 
-def _common_rules(site_name: str) -> str:
-    return f"""- Answer ONLY from the site content above. Be simple, friendly and brief: at most ~100
-  words, no code examples unless the question explicitly asks for code.
+CITATION_SCHEMA = citation_schema()   # default cap; main.py uses citation_schema(max_words)
+
+
+def _common_rules(site_name: str, max_words: int = 100, guidance: str = "") -> str:
+    extra = f"\n- {guidance.strip()}" if guidance.strip() else ""
+    return f"""- Answer ONLY from the site content above. Be simple, friendly: at most ~{max_words}
+  words, no code examples unless the question explicitly asks for code.{extra}
 - If the answer is not in the site content, do not guess: say so and suggest up to 3
   pages from the site content that might help.
 - If the request is harmful, explicit, violent, illegal, sexual, hateful, or unrelated
@@ -71,7 +76,8 @@ def _common_rules(site_name: str) -> str:
   (or any [src: ...] text) into your answer."""
 
 
-def build_system_prompt(site_name: str, corpus_md: str, protocol: str = "trailer") -> str:
+def build_system_prompt(site_name: str, corpus_md: str, protocol: str = "trailer",
+                        max_words: int = 100, guidance: str = "") -> str:
     header = f"""You are the helpful assistant for "{site_name}". The SITE CONTENT between
 <corpus> tags below is your only knowledge source. {_APACHE_NOTE}
 
@@ -82,13 +88,13 @@ def build_system_prompt(site_name: str, corpus_md: str, protocol: str = "trailer
 RULES (follow exactly)
 """
     if protocol == "structured":
-        return header + _common_rules(site_name) + f"""
+        return header + _common_rules(site_name, max_words, guidance) + f"""
 - Respond with the JSON object: "answer" plus 1-3 "citations" (most relevant first).
   For each citation: "url" copied from a [src:] marker; "section" = the heading text of
   the most specific relevant section (plain text); "quote" = ONE continuous sentence
   copied EXACTLY as written there, or empty if unsure; "label" = section or page title.
   Omit citations only for refusals."""
-    return header + _common_rules(site_name) + f"""
+    return header + _common_rules(site_name, max_words, guidance) + f"""
 - MANDATORY: end EVERY reply with this block (omit it ONLY for refusals):
 
 CITATIONS:

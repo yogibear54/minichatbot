@@ -15,7 +15,7 @@ from core.config import Config
 from server.citations import (KnowledgeBase, extract_citations, ground_citations,
                               rescue_citations)
 from server.llm import LLMError, OpenAICompatClient
-from server.prompts import (CITATION_SCHEMA, build_messages, build_system_prompt)
+from server.prompts import (build_messages, build_system_prompt, citation_schema)
 from server.sessions import Store
 from server.citations import sanitize_markers
 from server.streamparse import StreamMarkerSuppressor, StreamedAnswerParser
@@ -81,8 +81,12 @@ def create_app(cfg: Config) -> FastAPI:
     corpus_md = (cfg.data_dir / "corpus.md").read_text(encoding="utf-8")
     state = {
         "manifest": manifest,
-        "sys_trailer": build_system_prompt(cfg.site.name, corpus_md, protocol="trailer"),
-        "sys_structured": build_system_prompt(cfg.site.name, corpus_md, protocol="structured"),
+        "sys_trailer": build_system_prompt(cfg.site.name, corpus_md, protocol="trailer",
+                                           max_words=cfg.chat.max_answer_words,
+                                           guidance=cfg.chat.answer_guidance),
+        "sys_structured": build_system_prompt(cfg.site.name, corpus_md, protocol="structured",
+                                              max_words=cfg.chat.max_answer_words,
+                                              guidance=cfg.chat.answer_guidance),
     }
     protocol = cfg.chat.protocol if cfg.chat.protocol in ("trailer", "structured") else "trailer"
 
@@ -101,8 +105,12 @@ def create_app(cfg: Config) -> FastAPI:
             kb.load(m, public_origin=cfg.site.public_base_url or None)
             corpus_md = (cfg.data_dir / "corpus.md").read_text(encoding="utf-8")
             state["manifest"] = m
-            state["sys_trailer"] = build_system_prompt(cfg.site.name, corpus_md, protocol="trailer")
-            state["sys_structured"] = build_system_prompt(cfg.site.name, corpus_md, protocol="structured")
+            state["sys_trailer"] = build_system_prompt(cfg.site.name, corpus_md, protocol="trailer",
+                                                       max_words=cfg.chat.max_answer_words,
+                                                       guidance=cfg.chat.answer_guidance)
+            state["sys_structured"] = build_system_prompt(cfg.site.name, corpus_md, protocol="structured",
+                                                          max_words=cfg.chat.max_answer_words,
+                                                          guidance=cfg.chat.answer_guidance)
 
     def sse(obj: dict) -> str:
         return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
@@ -263,7 +271,7 @@ def create_app(cfg: Config) -> FastAPI:
                 try:
                     async for delta in chat_client.stream_chat(
                             cfg.chat.model, messages, cfg.chat.max_output, cfg.chat.temperature,
-                            response_format=CITATION_SCHEMA):
+                            response_format=citation_schema(cfg.chat.max_answer_words)):
                         text = parser.feed(delta)
                         visible = out_sup.feed(text)      # newly released suppressed text
                         emitted2 += len(visible)

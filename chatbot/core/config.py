@@ -41,6 +41,11 @@ class ChatConfig:
     # "structured" = response_format json_schema {answer, citations[]} — requires a model
     #                with real structured-output enforcement (verify: scripts/structured_probe.py)
     protocol: str = "trailer"
+    # Answer length/style: the word cap is formatted into the system prompt (default
+    # "at most ~100 words" is why answers can feel short); answer_guidance is optional
+    # free-text style direction appended as an extra rule bullet.
+    max_answer_words: int = 100
+    answer_guidance: str = ""
 
 
 @dataclass

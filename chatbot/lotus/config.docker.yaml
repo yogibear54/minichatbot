@@ -53,6 +53,11 @@ chat:
   #                enforcement. Measured alternative: mistralai/mistral-small-3.2-24b-instruct,
   #                3/5 grounded (PASS). Avoid gpt-oss-20b here: 0/5, invalid JSON, 16s TTFT.
   protocol: "trailer"
+  max_answer_words: 220        # default 100 ("brief") — answers felt too short
+  answer_guidance: >-          # extra style rules appended to the system prompt
+    Prefer thorough answers: open with a direct reply, then add a short bullet list
+    or a concrete example from the site content when it helps. Include the specifics
+    (names, numbers, technologies) found in the source material.
   extra_headers:               # OpenRouter app attribution (optional but recommended)
     HTTP-Referer: "http://localhost:8010"
     X-Title: "Lotus Creations Chatbot"
